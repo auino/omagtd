@@ -1,0 +1,6 @@
+#!/bin/bash
+# This is a real file on purpose: quickshell only lets this app config run
+# executables that physically resolve inside app/, so a symlink to the
+# plugin's bin/gtd is refused. The app loads this wrapper and it forwards to
+# the single copy of the CLI in the plugin root (with its lib/ beside it).
+exec "$(cd "$(dirname "$0")/../.." && pwd)/bin/gtd" "$@"

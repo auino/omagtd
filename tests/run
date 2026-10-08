@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Run the GTD test suite. Any arguments are passed through to unittest.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec python3 -W error::DeprecationWarning -m unittest discover -s tests "$@"
