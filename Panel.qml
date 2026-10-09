@@ -38,6 +38,7 @@ Panel {
   property string timeFormat: "24h"
   property int waiting: 0
   property int flagged: 0
+  property int flaggedToday: 0
   property int projectsOpen: 0
   property string nextTitle: ""
   property bool stale: false
@@ -278,11 +279,7 @@ Panel {
           root.overdue = d.overdue || 0
           root.upcoming = d.upcoming || 0
           root.waiting = d.waiting || 0
-          root.flagged = d.flagged || 0
-          root.projectsOpen = d.projects_open || 0
-          root.dueTime = d.due_time || "18:00"
-          root.timeFormat = d.time_format || "24h"
-          root.nextTitle = d.next_title || ""
+          root.flaggedToday = d.flagged_today || 0
         } catch (e) {
           root.stale = true
         }
@@ -621,7 +618,7 @@ Panel {
               // flagged action sits in the `today` view, so the global flagged
               // count is exactly "at least one flagged task on today".
               color: (root.overdue > 0 || root.dueTodayLate > 0) ? root.urgent
-                   : (root.flagged > 0 ? gtdTheme.orange : root.dim)
+                   : (root.flaggedToday > 0 ? gtdTheme.orange : root.dim)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true

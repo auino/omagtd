@@ -23,7 +23,8 @@ BarWidget {
   readonly property int dueToday: panel ? panel.dueToday : 0
   readonly property int dueTodayLate: panel ? panel.dueTodayLate : 0
   readonly property int overdue: panel ? panel.overdue : 0
-  readonly property int flagged: panel ? panel.flagged : 0
+  readonly   property int flagged: panel ? panel.flagged : 0
+  property int flaggedToday: 0
 
   // Settings.
   readonly property bool compact: root.settings && root.settings.compact === true
@@ -168,7 +169,7 @@ BarWidget {
   // flagged action sits in the `today` view, so the global flagged count is
   // exactly "at least one flagged task on today".
   readonly property bool pillRed: root.overdue > 0 || root.dueTodayLate > 0
-  readonly property bool pillOrange: !root.pillRed && root.flagged > 0
+  readonly property bool pillOrange: !root.pillRed && root.flaggedToday > 0 && root.dueToday > 0
 
   // The bar slot is just the pill: the counts open the quick panel, and the
   // full view is reached from the panel itself (its ↓ / capture-and-edit) or

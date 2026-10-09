@@ -2343,6 +2343,8 @@ def stats(store: Store) -> dict:
         "waiting": count("waiting_for"),
         "someday": count("someday"),
         "flagged": count("flagged"),
+        "flagged_today": int(store.scalar(
+            "SELECT COUNT(*) FROM due_today WHERE priority > 0") or 0),
         "reference": int(store.scalar(
             "SELECT COUNT(*) FROM items WHERE status = 'reference'")),
         "projects": int(store.scalar(
@@ -2385,6 +2387,7 @@ def bar_snapshot(store: Store) -> dict:
         "upcoming": data["upcoming"],
         "waiting": data["waiting"],
         "flagged": data["flagged"],
+        "flagged_today": data.get("flagged_today", 0),
         "projects_open": data["projects_open"],
         "due_time": settings(store)["due_time"],
         "time_format": settings(store)["time_format"],
