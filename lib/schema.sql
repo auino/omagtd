@@ -161,6 +161,24 @@ CREATE TABLE IF NOT EXISTS log (
 CREATE INDEX IF NOT EXISTS idx_log_at   ON log(at);
 CREATE INDEX IF NOT EXISTS idx_log_item ON log(item_id);
 
+-- Undo stack. Every mutating CLI command records the before-image of each
+-- item it touches (the whole row, plus the item's contexts), so `gtd undo`
+-- can turn the last change back. One entry per command, one row per item.
+CREATE TABLE IF NOT EXISTS undo (
+  id     INTEGER PRIMARY KEY AUTOINCREMENT,
+  at     TEXT NOT NULL,
+  action TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS undo_item (
+  undo_id INTEGER NOT NULL REFERENCES undo(id) ON DELETE CASCADE,
+  item_id TEXT    NOT NULL,
+  data    TEXT    NOT NULL,
+  PRIMARY KEY (undo_id, item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_undo_item_item ON undo_item(item_id);
+
 -- ---------------------------------------------------------------- views
 --
 -- Views exist so the database is useful on its own: `sqlite3 gtd.sqlite3`

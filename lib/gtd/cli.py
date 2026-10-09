@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import zipfile
 
 from . import __version__, core, dates, importer, quick, review
@@ -61,9 +62,12 @@ class Out:
         """Emit the machine-readable form and stop."""
         print(json.dumps(payload, indent=2, sort_keys=True, default=str))
 
-    def fail(self, message: str) -> None:
+    def fail(self, message: str, reason: str | None = None) -> None:
         if self.json_mode:
-            print(json.dumps({"ok": False, "error": message}, indent=2))
+            payload = {"ok": False, "error": message}
+            if reason:
+                payload["reason"] = reason
+            print(json.dumps(payload, indent=2))
         else:
             print(self.red("gtd: ") + message, file=sys.stderr)
         raise SystemExit(2)
@@ -402,6 +406,37 @@ def cmd_postpone(args, out: Out, store: Store) -> dict:
     else:
         out.line(out.dim(f"nothing to postpone: {item['title']} has no deadline"))
     return {"ok": True, "item": item}
+
+
+def cmd_open(args, out: Out, store: Store) -> dict:
+    """Open the link an item carries in the desktop's default viewer.
+
+    The link is the item's `url` field when it has one, else its first URL
+    attachment. A local file is not a link, so a file attachment is left for
+    the fullscreen editor's copy button rather than opened.
+    """
+    item = core.find(store, args.id)
+    link = core.link_for(store, item["id"])
+    if not link:
+        raise GtdError(
+            f"nothing to open: {item['title'] or item['id']} carries no link",
+            reason="no-link")
+    if args.print:
+        if out.json_mode:
+            return {"ok": True, "link": link}
+        out.line(link)
+        return {"ok": True, "link": link}
+    target = link
+    if target.startswith("file://"):
+        try:
+            target = urllib.parse.unquote(target[len("file://"):])
+        except Exception:
+            target = target[len("file://"):]
+    subprocess.Popen(["xdg-open", target])
+    if out.json_mode:
+        return {"ok": True, "link": link}
+    out.line(f"{out.green('opened')}  {link}")
+    return {"ok": True, "link": link}
 
 
 def cmd_project(args, out: Out, store: Store) -> dict:
@@ -822,6 +857,21 @@ def cmd_purge(args, out: Out, store: Store) -> dict:
     return {"ok": True, **result}
 
 
+def cmd_undo(args, out: Out, store: Store) -> dict:
+    """Take back the last change.
+
+    Scoped to the item it is asked about, because that is what the `z` key
+    in both front ends acts on: the task on screen. Without an id it takes
+    back whatever happened last, which is what the terminal wants.
+    """
+    result = core.undo(store, args.id)
+    if out.json_mode:
+        return {"ok": True, **result}
+    out.line(f"{out.green('undone')}  {result['reverted']}  "
+             + out.dim("(%d item(s))" % result["count"]))
+    return {"ok": True, **result}
+
+
 def cmd_import(args, out: Out, store: Store) -> dict:
     result = importer.import_file(store, args.source, fmt=args.format,
                                   dry_run=args.dry_run, progress=not out.json_mode and not out.quiet)
@@ -1212,6 +1262,12 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--days", type=int, default=1,
                       help="how many days to roll forward (default 1)")
 
+    node = add("open", cmd_open,
+               "open the item's link in the desktop's default viewer")
+    node.add_argument("id")
+    node.add_argument("--print", action="store_true",
+                      help="resolve and print the link without opening it")
+
     node = add("wait", cmd_engage, "an action someone else owes you")
     node.add_argument("id")
     node.add_argument("who", nargs="?",
@@ -1361,6 +1417,13 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--days", type=int, help="only what has been there longer")
     node.add_argument("--all", action="store_true", help="the whole trash")
 
+    node = add("undo", cmd_undo, "take back the last change",
+               description=("With an id, the most recent change that touched "
+                            "that item; without one, whatever happened last. "
+                            "One command is one undo, so repeating it walks "
+                            "further back."))
+    node.add_argument("id", nargs="?", help="id, unique prefix, or 'last'")
+
     node = add("import", cmd_import, "import from OmniFocus, CSV, JSON or a zip export")
     node.add_argument("source")
     node.add_argument("--format", choices=("auto", "omnifocus", "ofxml", "ofocusmx",
@@ -1385,6 +1448,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 GLOBAL_DEFAULTS = {"db": None, "profile": None, "json": False,
                    "quiet": False, "width": 62}
+
+
+def _undo_label(args) -> str:
+    """What an undo entry is called in the history: the verb, its action and
+    the reference it was given, enough to name the change and no more."""
+    command = str(getattr(args, "command", "") or "")
+    action = str(getattr(args, "action", "") or "")
+    ref = str(getattr(args, "id", "") or "")
+    bits = [command]
+    if action and action != command:
+        bits.append(action)
+    if ref and ref != action:
+        bits.append(ref)
+    return " ".join(b for b in bits if b)
 
 
 def main(argv=None) -> int:
@@ -1426,17 +1503,25 @@ def main(argv=None) -> int:
         if handler is None:
             parser.print_help()
             return 0
+        # Undo is journaled per command: one entry for everything the handler
+        # changed, nothing at all if it failed or changed nothing.
+        core.undo_begin(store)
         result = handler(args, out, store)
+        core.undo_commit(store, _undo_label(args))
     except GtdError as exc:
+        core.undo_cancel(store)
         store.close()
-        out.fail(str(exc))
+        out.fail(str(exc), reason=exc.reason)
         return 2
     except KeyboardInterrupt:
+        core.undo_cancel(store)
         store.close()
         return 130
     except BrokenPipeError:
+        core.undo_cancel(store)
         return 0
     except Exception as exc:  # unexpected: report the type, not just the message
+        core.undo_cancel(store)
         store.close()
         out.fail(f"{type(exc).__name__}: {exc}")
         return 1

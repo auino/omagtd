@@ -87,6 +87,7 @@ class Store:
         self.path = db_path(profile, str(path) if path else None)
         self.readonly = readonly
         self._conn: sqlite3.Connection | None = None
+        self._gtd_undo: dict | None = None
         self.ensure()
 
     # ---------------------------------------------------------------- conn

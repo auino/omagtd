@@ -531,6 +531,37 @@ class Postpone(TempStore):
         self.assertEqual([row[0] for row in log][-1], "postpone")
 
 
+class Link(TempStore):
+    def test_item_url_is_the_link(self):
+        item = self.capture("Read the manual", url="https://example.com/docs")
+        self.assertEqual(core.link_for(self.store, item["id"]),
+                         "https://example.com/docs")
+
+    def test_url_wins_over_a_url_attachment(self):
+        item = self.capture("Read the manual", url="https://example.com/docs")
+        core.add_attachment(self.store, item["id"], "https://example.com/extra")
+        self.assertEqual(core.link_for(self.store, item["id"]),
+                         "https://example.com/docs")
+
+    def test_a_url_attachment_is_the_link_when_there_is_no_url_field(self):
+        item = self.capture("Check the dashboard")
+        core.add_attachment(self.store, item["id"], "https://example.com/status")
+        self.assertEqual(core.link_for(self.store, item["id"]),
+                         "https://example.com/status")
+
+    def test_a_file_attachment_is_not_a_link(self):
+        item = self.capture("Review the report")
+        path = os.path.join(self.home, "report.pdf")
+        with open(path, "wb") as handle:
+            handle.write(b"%PDF-1.4")
+        core.add_attachment(self.store, item["id"], path)
+        self.assertIsNone(core.link_for(self.store, item["id"]))
+
+    def test_no_url_and_no_attachment_is_no_link(self):
+        item = self.capture("Just a thought")
+        self.assertIsNone(core.link_for(self.store, item["id"]))
+
+
 class DatabaseNaming(TempStore):
     def test_default_database_is_named_omagtd(self):
         # The store opens `omagtd.sqlite3`, not the old `gtd.sqlite3`, so the
@@ -1903,15 +1934,18 @@ class Attachments(TempStore):
 
 
 class CommandLine(TempStore):
-    def run_cli(self, *argv):
+    def run_cli_result(self, *argv):
         import subprocess
         cli = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "gtd")
         env = dict(os.environ)
         env["GTD_DB"] = str(self.store.path)
-        proc = subprocess.run(
+        return subprocess.run(
             [sys.executable, cli, *argv, "--json"],
             capture_output=True, text=True, env=env)
+
+    def run_cli(self, *argv):
+        proc = self.run_cli_result(*argv)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return json.loads(proc.stdout)
 
@@ -1939,6 +1973,19 @@ class CommandLine(TempStore):
         self.run_cli("bar")
         self.assertIsNone(self.store.one("SELECT id FROM items WHERE id = ?",
                                          (item_id,)))
+
+    def test_open_link_prints_the_link_without_launching(self):
+        item_id = self.run_cli(
+            "capture", "Read the manual",
+            "--link", "https://example.com/docs")["item"]["id"]
+        opened = self.run_cli("open", item_id, "--print")
+        self.assertEqual(opened["link"], "https://example.com/docs")
+
+    def test_open_fails_on_an_item_with_no_link(self):
+        item_id = self.run_cli("capture", "No link here")["item"]["id"]
+        proc = self.run_cli_result("open", item_id)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("carries no link", json.loads(proc.stdout)["error"])
 
     def test_settings_command_reports_and_sets_the_new_knobs(self):
         shown = self.run_cli("settings")
@@ -2129,5 +2176,48 @@ class CommandLine(TempStore):
                 os.environ["GTD_HOME"] = previous
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_open_without_link_returns_reason(self):
+        item_id = self.run_cli("capture", "Nope")["item"]["id"]
+        proc = self.run_cli_result("open", item_id, "--json")
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertFalse(data["ok"])
+        self.assertIn("no link", data["error"].lower())
+        self.assertEqual(data.get("reason"), "no-link")
+
+
+class Undo(TempStore):
+    def test_undo_edit_reverts_in_one_step(self):
+        from lib.gtd import core
+        core.undo_begin(self.store)
+        item = core.capture(self.store, "Draft the report")
+        core.undo_commit(self.store, "capture")
+        self.assertEqual(item["title"], "Draft the report")
+        core.undo_begin(self.store)
+        core.organize(self.store, item["id"], title="Draft the final report")
+        core.undo_commit(self.store, "edit")
+        self.assertEqual(core.get(self.store, item["id"])["title"],
+                         "Draft the final report")
+        result = core.undo(self.store)
+        self.assertIn("reverted", result)
+        self.assertEqual(result["reverted"], "edit")
+        self.assertEqual(core.get(self.store, item["id"])["title"],
+                         "Draft the report")
+
+    def test_undo_flag_then_flag_back(self):
+        from lib.gtd import core
+        core.undo_begin(self.store)
+        item = core.capture(self.store, "Pay bill")
+        core.undo_commit(self.store, "capture")
+        core.undo_begin(self.store)
+        core.engage(self.store, item["id"], "flag")
+        core.undo_commit(self.store, "flag")
+        self.assertEqual(core.get(self.store, item["id"])["priority"], 1)
+        core.undo_begin(self.store)
+        core.engage(self.store, item["id"], "unflag")
+        core.undo_commit(self.store, "unflag")
+        self.assertEqual(core.get(self.store, item["id"])["priority"], 0)
+        core.undo(self.store, item["id"])
+        self.assertEqual(core.get(self.store, item["id"])["priority"], 1)
+        core.undo(self.store, item["id"])
+        self.assertEqual(core.get(self.store, item["id"])["priority"], 0)

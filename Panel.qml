@@ -311,6 +311,24 @@ Panel {
   Process {
     id: actionProc
     onExited: { root.actionPending = false; root.reload() }
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var out = String(this.text).trim()
+        if (out === "") return
+        try {
+          var d = JSON.parse(out)
+          if (d.ok === false && d.error) {
+            root.status = String(d.error)
+            // `o` with nothing behind it says so in the shell, where the eye
+            // already is, rather than only in the status line below.
+            if (d.reason === "no-link")
+              root.showOsd("", "No link available for the task")
+          } else if (d.ok && root.lastVerb === "open") {
+            root.showOsd("↗", "Opening link…")
+          }
+        } catch (e) { }
+      }
+    }
   }
 
   // Capture returns the new item; the panel cannot edit it in place, so it
@@ -340,6 +358,9 @@ Panel {
 
   property var listPending: false
   property bool actionPending: false
+  // Which verb the in-flight `runAction()` is, so a reply can be recognised
+  // as an open (worth a toast) without the reply naming itself again.
+  property string lastVerb: ""
   property int listStarts: 0
   property int listExits: 0
   readonly property bool busy: listPending || actionPending
@@ -364,13 +385,27 @@ Panel {
   function runAction(args) {
     if (root.actionPending || actionProc.running) return
     root.actionPending = true
+    root.lastVerb = args[0]
     exec(actionProc, [root.cli].concat(args).concat(["--json"]))
     if (args[0] === "capture") root.status = "captured"
     else if (args[0] === "flag") root.status = "flagged"
     else if (args[0] === "postpone") root.status = "postponed"
+    else if (args[0] === "open") root.status = "opened"
+    else if (args[0] === "undo") root.status = "undone"
     else if (args[0] === "engage" && args[2] === "done") root.status = "done"
     else if (args[0] === "engage" && args[2] === "drop") root.status = "dropped"
     else root.status = "done"
+  }
+
+  // A toast in the shell's OSD — the same card the launch message uses. The
+  // shell may not be running, so it goes through the quiet IPC wrapper, which
+  // fails silently instead of breaking the panel.
+  function showOsd(icon, message) {
+    try {
+      Quickshell.execDetached(
+        ["omarchy-shell", "-q", "osd", "show",
+         JSON.stringify({ icon: icon, message: message, duration: 2000 })])
+    } catch (e) { }
   }
 
   function capture(text) {
@@ -429,6 +464,8 @@ Panel {
     if (name === "done") root.runAction(["engage", id, "done"])
     else if (name === "drop") root.runAction(["engage", id, "drop"])
     else if (name === "flag") root.runAction(["flag", id])
+    else if (name === "open") root.runAction(["open", id])
+    else if (name === "undo") root.runAction(["undo", id])
   }
 
   function toggleFlag() { root.act("flag") }
@@ -501,6 +538,8 @@ Panel {
         if (t === "c" || t === "C") root.focusCapture()
         else if (t === "d" || t === "D") root.act("done")
         else if (t === "f" || t === "F") root.toggleFlag()
+        else if (t === "o" || t === "O") root.act("open")
+        else if (t === "z" || t === "Z") root.act("undo")
         else if (t === "x" || t === "X") root.act("drop")
         else if (t === "r" || t === "R") root.reload()
         else if (t === "m" || t === "M") root.openFullscreen()
@@ -763,7 +802,7 @@ Panel {
             font.pixelSize: Style.font.caption
             text: {
               if (root.status !== "") return root.status
-              return "↑↓ move  c capture  ↓ capture+edit  f flag  d done  x drop  p postpone  m full screen  r reload  esc close"
+              return "↑↓ move  c capture  ↓ capture+edit  f flag  d done  x drop  p postpone  o open  z undo  m full screen  r reload  esc close"
             }
           }
         }

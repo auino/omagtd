@@ -141,6 +141,7 @@ FocusScope {
        { key: "calendar",  label: "Calendar",  args: ["calendar"] },
       { key: "review",    label: "Review",    args: ["review", "weekly"] },
       { key: "log",       label: "Log",       args: ["list", "log", "--limit", "200"] },
+      { key: "trash",     label: "Trash",     args: ["trash", "--list"] },
       { key: "hideZeroCounts", label: "Top Bar: Hide 0/0", args: ["setting", "--json"] },
       { key: "search",    label: "Search",    args: ["search", "--limit", "200"] }
   ]
@@ -217,6 +218,9 @@ readonly property var primaryViews: [
   property string detailWantedKind: ""
   property string status: ""
   property bool stale: false
+  // Which verb the in-flight `run()` is, so a reply can be recognised as an
+  // open (worth a toast) without the reply having to name itself again.
+  property string lastVerb: ""
 
   // Form fields for the right-hand editor, seeded from the selection.
   property string editTitle: ""
@@ -412,7 +416,15 @@ readonly property var primaryViews: [
         if (out === "") return
         try {
           var d = JSON.parse(out)
-          if (d.ok === false && d.error) root.status = String(d.error)
+          if (d.ok === false && d.error) {
+            root.status = String(d.error)
+            // `o` with nothing behind it says so in the shell, where the eye
+            // already is, rather than only in the status line below.
+            if (d.reason === "no-link")
+              root.showOsd("", "No link available for the task")
+          } else if (d.ok && root.lastVerb === "open") {
+            root.showOsd("↗", "Opening link…")
+          }
         } catch (e) {
           // Commands that print nothing useful still succeeded if they exited 0.
         }
@@ -1607,6 +1619,8 @@ readonly property var primaryViews: [
       else if (name === "flag") root.run(["flag", id])
       else if (name === "unflag") root.run(["unflag", id])
       else if (name === "postpone") root.run(["postpone", id])
+      else if (name === "open") root.run(["open", id], "opened")
+      else if (name === "undo") root.run(["undo", id], "undone")
       }
 
     // ---- Drag and drop ------------------------------------------------------
@@ -1683,9 +1697,21 @@ readonly property var primaryViews: [
      root.run(["edit", id, "--inbox"], "back to inbox")
         }
 
+  // A toast in the shell's OSD — the same card the launch message uses. The
+  // shell may not be running (the standalone app has no shell), so the call
+  // goes through the quiet IPC wrapper, which fails silently.
+  function showOsd(icon, message) {
+    try {
+      Quickshell.execDetached(
+        ["omarchy-shell", "-q", "osd", "show",
+         JSON.stringify({ icon: icon, message: message, duration: 2000 })])
+    } catch (e) { }
+  }
+
   function run(args, label) {
     if (root.commandPending) return
     root.commandPending = true
+    root.lastVerb = args[0]
     root.status = label || args.join(" ")
     exec(commandProc, [root.cli].concat(args).concat(["--json"]))
   }
@@ -1952,11 +1978,15 @@ readonly property var primaryViews: [
   function openAttachment() {
     var att = String(root.editAttachments || "").trim()
     var uri = root.attachmentIsLink() ? att : String(root.editLink || "").trim()
-    if (!uri) return
+    if (!uri) {
+      root.showOsd("", "No link available for the task")
+      return
+    }
     var target = uri
     if (uri.indexOf("file://") === 0) {
       try { target = decodeURIComponent(uri.slice(7)) } catch (e) { target = uri.slice(7) }
     }
+    root.showOsd("↗", "Opening link…")
     try { Quickshell.execDetached(["xdg-open", target]) } catch (e) {}
   }
 
@@ -2007,6 +2037,8 @@ readonly property var primaryViews: [
       else if (t === "r" || t === "R") root.reload()
       else if (t === "t" || t === "T") root.act("start")
       else if (t === "p" || t === "P") root.act("postpone")
+      else if (t === "o" || t === "O") root.act("open")
+      else if (t === "z" || t === "Z") root.act("undo")
       else if (t === "m" || t === "M") root.showSettings()
       else if (t >= "1" && t <= "9") root.pickView(parseInt(t, 10))
     }
@@ -3421,15 +3453,31 @@ readonly property var primaryViews: [
                  fontFamily: root.fontFamily
                 }
 
-               Button {
-                 text: "view log"
-                 bordered: true
-                 fontFamily: root.fontFamily
-                 fontSize: Style.font.caption
-                 foreground: root.textColor
-                 onClicked: {
-                   root.settingsOpen = false
-                   root.pickViewByKey("log")
+               Row {
+                 spacing: Style.spacing.xs
+
+                 Button {
+                   text: "view log"
+                   bordered: true
+                   fontFamily: root.fontFamily
+                   fontSize: Style.font.caption
+                   foreground: root.textColor
+                   onClicked: {
+                     root.settingsOpen = false
+                     root.pickViewByKey("log")
+                    }
+                  }
+
+                 Button {
+                   text: "trash"
+                   bordered: true
+                   fontFamily: root.fontFamily
+                   fontSize: Style.font.caption
+                   foreground: root.textColor
+                   onClicked: {
+                     root.settingsOpen = false
+                     root.pickViewByKey("trash")
+                    }
                   }
                 }
               }
@@ -4117,7 +4165,7 @@ text: root.editNotes
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.status !== "" ? root.status
-          : "← → column  ↑↓ move  ↓ capture+edit  enter save  c capture  d done  f flag  w wait  i inbox  t start  p postpone  x drop  s settings  tab view  esc close"
+          : "← → column  ↑↓ move  ↓ capture+edit  enter save  c capture  d done  f flag  w wait  i inbox  t start  p postpone  o open  z undo  x drop  s settings  tab view  esc close"
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

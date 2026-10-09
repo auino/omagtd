@@ -6,6 +6,10 @@ an inbox, clarify, organize, reflect, and engage — projects/areas, contexts
 (tags), waiting-for, someday/maybe, recurring actions, and an internal
 calendar, backed by a sqlite3 database and scriptable through a `gtd` CLI.
 
+## Human-generated content
+
+TODO
+
 ## What's included
 
 - **Bar pill** — inbox and next-action counts, with a compact glyph-only mode.
@@ -78,8 +82,9 @@ python3 ~/.config/omarchy/plugins/com.auino.omagtd/lib/gtd/cli.py --help
 ```
 
 Common verbs: `capture` (inbox), `clarify`/`triage`, `edit`, `defer`,
-`postpone`/`roll`, `today`, `focus`, `engage`, `review`, `tag`/`context`,
-`tree`, `calendar`/`cal`, `agenda`, `settings`, `import`, `export`, `db`.
+`postpone`/`roll`, `open` (open an item's link), `today`, `focus`, `engage`,
+`review`, `tag`/`context`, `tree`, `calendar`/`cal`, `agenda`, `settings`,
+`import`, `export`, `db`.
 
 ### Data location
 

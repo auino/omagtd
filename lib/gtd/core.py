@@ -44,7 +44,16 @@ REVIEW_INTERVALS = ("daily", "weekly", "monthly", "quarterly", "yearly", "never"
 
 
 class GtdError(Exception):
-    """Anything the user did wrong, phrased so the CLI can print it as-is."""
+    """Anything the user did wrong, phrased so the CLI can print it as-is.
+
+    `reason` is an optional, stable machine-readable tag (used by the panel
+    and the full-screen view to tell one failure from another without parsing
+    the message).
+    """
+
+    def __init__(self, message, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 # --------------------------------------------------------------- fetching
@@ -372,6 +381,7 @@ def split_names(names) -> list[str]:
 
 
 def set_tags(store: Store, item_id: str, names) -> None:
+    _undo_snapshot_item(store, item_id)   # a context change is a change too
     for name in split_names(names):
         tag = ensure_tag(store, name)
         store.run("INSERT OR IGNORE INTO item_tags(item_id, tag_id) VALUES(?, ?)",
@@ -383,6 +393,7 @@ def add_tags(store: Store, item_id: str, names) -> None:
 
 
 def remove_tags(store: Store, item_id: str, names) -> None:
+    _undo_snapshot_item(store, item_id)
     for name in split_names(names):
         row = store.one("SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (name,))
         if row:
@@ -421,6 +432,21 @@ def _remote_uri(uri: str) -> bool:
     if uri.lower().startswith("file://"):
         return False
     return bool(re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", uri)) or uri.startswith("mailto:")
+
+
+def link_for(store: Store, item_id: str) -> str | None:
+    """The link an item can open: its `url` field, else its first URL
+    attachment. A local file is not a link — the editor hands files to the
+    copy button, never to an opener — so file attachments are not offered.
+    """
+    row = store.one("SELECT url FROM items WHERE id = ?", (item_id,))
+    if row is not None and row["url"]:
+        return row["url"]
+    for attachment in attachments_of(store, item_id):
+        uri = attachment.get("uri") or ""
+        if _remote_uri(uri):
+            return uri
+    return None
 
 
 def _file_hash(path: Path) -> str:
@@ -803,6 +829,7 @@ def _rank_next(store: Store, parent_id: str | None) -> int:
 def _update(store: Store, item_id: str, **fields) -> None:
     if not fields:
         return
+    _undo_snapshot_item(store, item_id)   # before-image, once per command
     if "repeat" in fields:
         fields["repeat"] = _encode_repeat(fields["repeat"])
     fields["updated_at"] = now()
@@ -936,6 +963,7 @@ def capture(store: Store, text: str | None = None, *, title=None, notes: str = "
     item_id = new_id()
     defer_at, due_at = _field(defer), _field(due)
     _validate_dates(defer_at, due_at)
+    _undo_snapshot_item(store, item_id)   # records "did not exist" for undo
     store.run(
         "INSERT INTO items(id, kind, title, notes, url, parent_id, status, priority, "
         "defer_at, due_at, duration, waiting_for, repeat, review, rank, "
@@ -1366,6 +1394,7 @@ def create_child(store: Store, parent_id: str | None, title: str, **fields) -> d
     status = fields.get("status") or ("active" if parent else "inbox")
     stamp = now()
     item_id = new_id()
+    _undo_snapshot_item(store, item_id)
     store.run(
         "INSERT INTO items(id, kind, title, notes, parent_id, status, priority, "
         "defer_at, due_at, duration, waiting_for, repeat, review, rank, "
@@ -1414,10 +1443,14 @@ def _drop_empty_project(store: Store, project: dict) -> bool:
         (project["id"],))
     if not had_work:
         return False
-    store.run("UPDATE items SET parent_id = NULL, updated_at = ? "
-              "WHERE parent_id = ?", (now(), project["id"]))
+    for child in store.query("SELECT id FROM items WHERE parent_id = ?",
+                             (project["id"],)):
+        # Detaching the children is part of the same undoable change as the
+        # project's removal, so it goes through `_update` like any other edit.
+        _update(store, child["id"], parent_id=None)
     store.log(project["id"], "auto-remove", project["title"])
     uris = attachment_uris(store, [project["id"]])
+    _undo_snapshot_item(store, project["id"])
     store.run("DELETE FROM items WHERE id = ?", (project["id"],))
     discard_attachments(store, uris)
     return True
@@ -1686,10 +1719,248 @@ def purge(store: Store, ref: str | None = None, *, days: int | None = None,
         ids = [item["id"]]
     uris = attachment_uris(store, ids)
     for item_id in ids:
+        _undo_snapshot_tree(store, item_id)   # cascade deletes take the tree
         store.run("DELETE FROM items WHERE id = ?", (item_id,))
         store.log(None, "purge", item_id)
     discard_attachments(store, uris)
     return {"purged": ids}
+
+
+# ------------------------------------------------------------------- undo
+
+# Undo works as a journal. Every mutating CLI command opens a session before
+# the handler runs and closes it when the handler returns; anything the
+# handler changes through the shared write helpers (`_update`, capture,
+# create_child, purge, and the containers pruning themselves) records a
+# before-image of the row it touched into that session, once per item. A
+# success commits the session to the `undo` table as a single entry; a
+# failure discards it. `gtd undo <ref>` walks the most recent entry that
+# touched the item and restores every before-image it holds.
+#
+# The journal lives on the Store instance, not in module state, so two stores
+# opened in one process never share a session, and an entry is only ever
+# visible after the command that made it has fully succeeded.
+
+
+def undo_begin(store: Store) -> None:
+    store._gtd_undo = {"items": {}, "tags": {}}
+
+
+def undo_cancel(store: Store) -> None:
+    store._gtd_undo = None
+
+
+def undo_commit(store: Store, action: str) -> None:
+    session = store._gtd_undo
+    store._gtd_undo = None
+    if not session or not session["items"]:
+        return
+    store.run("INSERT INTO undo(at, action) VALUES(?, ?)",
+              (now(), (action or "").strip() or "change"))
+    undo_id = store.scalar("SELECT last_insert_rowid()")
+    for item_id, snapshot in session["items"].items():
+        payload = dict(snapshot)
+        payload["tags"] = session["tags"].get(item_id, [])
+        store.run("INSERT INTO undo_item(undo_id, item_id, data) VALUES(?, ?, ?)",
+                  (undo_id, item_id, json.dumps(payload)))
+
+
+def _undo_tags_names(store: Store, item_id: str) -> list[str]:
+    return sorted(r["name"] for r in store.query(
+        "SELECT t.name FROM item_tags it JOIN tags t ON t.id = it.tag_id "
+        "WHERE it.item_id = ?", (item_id,)))
+
+
+def _undo_snapshot_item(store: Store, item_id: str) -> None:
+    """Record the item's before-image, once per session per item.
+
+    The first call wins, because that is the state the item was in before
+    the command touched it — later changes inside the same command are part
+    of what `undo` rolls back.
+    """
+    session = store._gtd_undo
+    if not session or item_id in session["items"]:
+        return
+    row = store.one("SELECT * FROM items WHERE id = ?", (item_id,))
+    session["items"][item_id] = {
+        "absent": row is None,
+        "row": dict(row) if row is not None else None,
+    }
+    session["tags"][item_id] = _undo_tags_names(store, item_id) if row else []
+
+
+def _undo_snapshot_tree(store: Store, item_id: str) -> None:
+    """Snapshot an item and everything under it.
+
+    A purge deletes one row and sqlite cascades the children with it, so
+    undo has to bring the whole subtree back — there is no coherent state
+    where the project is gone and the actions it held are not.
+    """
+    _undo_snapshot_item(store, item_id)
+    for child in store.query("SELECT id FROM items WHERE parent_id = ?",
+                             (item_id,)):
+        _undo_snapshot_tree(store, child["id"])
+
+
+def undo(store: Store, ref: str | None = None) -> dict:
+    """Undo the most recent tracked change.
+
+    With `ref`, the most recent entry that touched that item; without one,
+    the most recent entry anywhere. Every before-image in the chosen entry is
+    restored, so a change that touched a project along with the task it was
+    about is undone as one step. The entry is consumed: the next call sees
+    the change before it.
+    """
+    undo_cancel(store)   # applying must not journal itself as the new change
+    if ref:
+        entry = _undo_find(store, ref)
+        if entry is None:
+            raise GtdError(f"nothing to undo for {ref!r}")
+    else:
+        entry = store.one("SELECT id, action FROM undo ORDER BY id DESC LIMIT 1")
+        if entry is None:
+            raise GtdError("nothing to undo")
+    restored = _undo_apply(store, entry["id"])
+    return {"reverted": entry["action"], "count": restored}
+
+
+def _undo_find(store: Store, ref: str):
+    """The newest entry that touched the item `ref` names, by exact id or
+    unique prefix — the same way every other verb resolves its reference. A
+    row that has since been purged still matches, because that is exactly
+    when an undo is wanted."""
+    try:
+        ref = find(store, ref)["id"]
+    except GtdError:
+        pass
+    return store.one(
+        "SELECT u.id, u.action FROM undo u JOIN undo_item ui "
+        "ON ui.undo_id = u.id WHERE ui.item_id LIKE ? "
+        "ORDER BY u.id DESC LIMIT 1", (str(ref) + "%",))
+
+
+def _undo_apply(store: Store, undo_id: int) -> int:
+    rows = list(store.query("SELECT * FROM undo_item WHERE undo_id = ?",
+                            (undo_id,)))
+    payloads = [(row["item_id"], json.loads(row["data"])) for row in rows]
+    _undo_check_absences(store, payloads)
+    titles: list[str] = []
+    for item_id, payload in _undo_order(store, payloads):
+        if payload.get("absent"):
+            uris = attachment_uris(store, [item_id])
+            store.run("DELETE FROM items WHERE id = ?", (item_id,))
+            discard_attachments(store, uris)
+            titles.append(item_id)
+            continue
+        before = payload.get("row") or {}
+        titles.append(_undo_restore_row(store, item_id, before))
+        tags = payload.get("tags") or []
+        store.run("DELETE FROM item_tags WHERE item_id = ?", (item_id,))
+        if tags:
+            set_tags(store, item_id, tags)
+        # Recompute the completion flags the change moved — but with a helper
+        # that never drops an empty project: undoing a change must not then
+        # delete the container it just brought back.
+        _undo_refresh_flag(store, item_id)
+        _undo_refresh_flag(store, before.get("parent_id"))
+    store.run("DELETE FROM undo WHERE id = ?", (undo_id,))
+    store.log(None, "undo", ", ".join(t for t in titles if t))
+    return len(rows)
+
+
+def _undo_check_absences(store: Store, payloads) -> None:
+    """Refuse an undo that would delete a row which has since gained children.
+
+    A captured project the user has since filled in is not something undo can
+    take back without taking the work with it. Children this same entry is
+    about to delete do not count against it — that is not work, that is the
+    rest of the same change.
+    """
+    absences = [item_id for item_id, payload in payloads
+                if payload.get("absent")]
+    for item_id in absences:
+        others = [other for other in absences if other != item_id]
+        sql = "SELECT COUNT(*) FROM items WHERE parent_id = ?"
+        params: tuple = (item_id,)
+        if others:
+            sql += (" AND id NOT IN ("
+                    + ", ".join("?" for _ in others) + ")")
+            params = (item_id, *others)
+        if store.scalar(sql, params):
+            raise GtdError(
+                f"cannot undo: {item_id} now holds children of its own")
+
+
+def _undo_order(store: Store, payloads):
+    """Sort what is about to be restored parents-first, deletions last.
+
+    sqlite enforces `items.parent_id` as a foreign key, so a task cannot come
+    back under a project that has not come back yet. Rows already in the
+    database are of course ready at once.
+    """
+    pending = [(item_id, payload) for item_id, payload in payloads
+               if not payload.get("absent")]
+    deletions = [(item_id, payload) for item_id, payload in payloads
+                 if payload.get("absent")]
+    planned: set = set()
+    ordered = []
+    while pending:
+        progress = False
+        for entry in list(pending):
+            row = entry[1].get("row") or {}
+            parent = row.get("parent_id")
+            if (not parent or parent in planned
+                    or store.one("SELECT id FROM items WHERE id = ?", (parent,))):
+                ordered.append(entry)
+                planned.add(entry[0])
+                pending.remove(entry)
+                progress = True
+        if not progress:      # unreachable in practice; sqlite will say why
+            ordered.extend(pending)
+            break
+    ordered.extend(deletions)
+    return ordered
+
+
+def _undo_restore_row(store: Store, item_id: str, before: dict) -> str:
+    columns = [key for key in before if key != "id"]
+    sets = ", ".join(f"{name} = ?" for name in columns)
+    values = [before[name] for name in columns]
+    if store.one("SELECT id FROM items WHERE id = ?", (item_id,)):
+        store.run(f"UPDATE items SET {sets} WHERE id = ?", (*values, item_id))
+    else:
+        names = ", ".join(columns)
+        placeholders = ", ".join("?" for _ in columns)
+        store.run(f"INSERT INTO items(id, {names}) VALUES(?, {placeholders})",
+                  (item_id, *values))
+    return str(before.get("title") or item_id)
+
+
+def _undo_refresh_flag(store: Store, node_id: str | None) -> None:
+    """Recompute a container's `completed` flag from what it holds.
+
+    The same arithmetic `_refresh_container` does, minus the part that prunes
+    a project left with nothing in it — inside an undo that pruning would
+    undo the undo.
+    """
+    if not node_id:
+        return
+    node = store.one("SELECT * FROM items WHERE id = ?", (node_id,))
+    if node is None or node["kind"] == ACTION:
+        return
+    if node["kind"] == PROJECT:
+        pending = store.scalar(
+            f"SELECT COUNT(*) FROM items WHERE parent_id = ? AND kind = 'action' "
+            f"AND status IN {LIVE_SQL}", (node_id,))
+    else:
+        pending = store.scalar(
+            "SELECT COUNT(*) FROM items WHERE parent_id = ? AND kind = 'project' "
+            "AND completed = 0 AND status NOT IN ('trashed', 'done', 'dropped')",
+            (node_id,))
+    completed = 1 if not pending else 0
+    if completed != (node["completed"] or 0):
+        store.run("UPDATE items SET completed = ?, updated_at = ? WHERE id = ?",
+                  (completed, now(), node_id))
 
 
 # --------------------------------------------------------------- review
