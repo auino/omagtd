@@ -1621,6 +1621,7 @@ readonly property var primaryViews: [
       else if (name === "postpone") root.run(["postpone", id])
       else if (name === "open") root.run(["open", id], "opened")
       else if (name === "undo") root.run(["undo", id], "undone")
+      else if (name === "undone") root.run(["engage", id, "undone"], "undone")
       }
 
     // ---- Drag and drop ------------------------------------------------------
@@ -1990,6 +1991,21 @@ readonly property var primaryViews: [
     try { Quickshell.execDetached(["xdg-open", target]) } catch (e) {}
   }
 
+  // OmniFocus import dialog - browse for export files
+  FileDialog {
+    id: importDialog
+    title: "Import from OmniFocus"
+    fileMode: FileDialog.OpenFile
+    nameFilters: ["OmniFocus (*.ofxml *.ofocusmx *.json)", "All files (*)"]
+    onAccepted: {
+      var path = selectedFile.toString()
+      if (path.indexOf("file://") === 0) path = path.slice(7)
+      try { path = decodeURIComponent(path) } catch (e) {}
+      root.importPath = path
+      root.doImport()
+    }
+  }
+
   // One attachment per task, so choosing it is the whole editor: a path to
   // type in would only be a second way to get it wrong.
   FileDialog {
@@ -2039,6 +2055,7 @@ readonly property var primaryViews: [
       else if (t === "p" || t === "P") root.act("postpone")
       else if (t === "o" || t === "O") root.act("open")
       else if (t === "z" || t === "Z") root.act("undo")
+      else if (t === "u" || t === "U") root.act("undone")
       else if (t === "m" || t === "M") root.showSettings()
       else if (t >= "1" && t <= "9") root.pickView(parseInt(t, 10))
     }
@@ -3303,6 +3320,16 @@ readonly property var primaryViews: [
                 spacing: Style.spacing.xs
 
                 Button {
+                  text: "browse"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: importDialog.open()
+                }
+
+                Button {
                   text: root.importDryRun ? "dry run ✓" : "dry run"
                   bordered: true
                   fontFamily: root.fontFamily
@@ -4116,6 +4143,16 @@ text: root.editNotes
                   }
 
                   Button {
+                    text: "undone"
+                    bordered: true
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    foreground: root.textColor
+                    enabled: !root.busy
+                    onClicked: root.act("undone")
+                  }
+
+                  Button {
                     text: "done"
                     bordered: true
                     fontFamily: root.fontFamily
@@ -4165,7 +4202,7 @@ text: root.editNotes
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.status !== "" ? root.status
-          : "← → column  ↑↓ move  ↓ capture+edit  enter save  c capture  d done  f flag  w wait  i inbox  t start  p postpone  o open  z undo  x drop  s settings  tab view  esc close"
+          : "← → column  ↑↓ move  ↓ capture+edit  enter save  c capture  d done  f flag  w wait  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  tab view  esc close"
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

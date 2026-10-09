@@ -38,7 +38,7 @@ LIVE_SQL = "('inbox', 'active', 'waiting', 'onhold', 'someday', 'reference')"
 
 CLARIFY_OUTCOMES = ("actionable", "do-now", "defer", "wait", "someday",
                     "reference", "delete")
-ENGAGE_ACTIONS = ("start", "stop", "done", "drop", "wait", "resume",
+ENGAGE_ACTIONS = ("start", "stop", "done", "undone", "drop", "wait", "resume",
                   "defer", "flag", "unflag", "inbox", "trash")
 REVIEW_INTERVALS = ("daily", "weekly", "monthly", "quarterly", "yearly", "never")
 
@@ -1215,6 +1215,18 @@ def engage(store: Store, ref: str, action: str, *, when=None, priority=None,
         if fields:
             _update(store, item["id"], **fields)
         return complete(store, item["id"], when=when)
+
+    if action == "undone":
+        # Mark a completed (done) task as active again. Undo handles most
+        # mutating commands, but this makes it explicit in engage and maps
+        # directly to the "u" shortcut in the UI.
+        item = find(store, ref)
+        if item["status"] == "done":
+            _update(store, item["id"], status="active", completed_at=None,
+                    started_at=None)
+            store.log(item["id"], "undone", item["title"])
+            _refresh_container(store, item["parent_id"])
+        return get(store, item["id"])
 
     if action == "drop":
         _update(store, item["id"], status="dropped", dropped_at=now(), waiting_for=None)
