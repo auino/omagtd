@@ -2022,7 +2022,7 @@ readonly property var primaryViews: [
     }
   }
 
-  // Simple date picker popups for deadline and defer date
+  // Simple date picker popups removed temporarily due to singleton Calendar issue
   Popup {
     id: dueDatePopup
     modal: true
@@ -2030,25 +2030,48 @@ readonly property var primaryViews: [
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
-    width: Style.space(320)
-    height: Style.space(280)
+    width: Style.space(280)
+    height: Style.space(120)
     background: Rectangle {
-      color: Color.popups.background
-      radius: Style.radius.sm
+      color: Color.background
+      radius: Style.cornerRadius
       border.color: root.line
       border.width: 1
     }
-    ControlsBasic.Calendar {
-      anchors.fill: parent
-      anchors.margins: Style.spacing.sm
-      onClicked: function(date) {
-        var d = new Date(date)
-        var y = d.getFullYear()
-        var m = String(d.getMonth() + 1).padStart(2, '0')
-        var day = String(d.getDate()).padStart(2, '0')
-        root.editDue = y + '-' + m + '-' + day
-        root.formDirty = true
-        dueDatePopup.close()
+    Column {
+      anchors.centerIn: parent
+      spacing: Style.spacing.md
+      Text {
+        text: "Date picker disabled (QML singleton issue)"
+        color: root.textColor
+        font.family: root.fontFamily
+      }
+      Row {
+        spacing: Style.spacing.md
+        Button {
+          text: "Use today"
+          onClicked: {
+            var d = new Date()
+            var y = d.getFullYear()
+            var m = String(d.getMonth() + 1).padStart(2, '0')
+            var day = String(d.getDate()).padStart(2, '0')
+            root.editDue = y + '-' + m + '-' + day
+            root.formDirty = true
+            dueDatePopup.close()
+          }
+        }
+        Button {
+          text: "Clear"
+          onClicked: {
+            root.editDue = ""
+            root.formDirty = true
+            dueDatePopup.close()
+          }
+        }
+        Button {
+          text: "Cancel"
+          onClicked: dueDatePopup.close()
+        }
       }
     }
   }
@@ -2060,25 +2083,48 @@ readonly property var primaryViews: [
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
-    width: Style.space(320)
-    height: Style.space(280)
+    width: Style.space(280)
+    height: Style.space(120)
     background: Rectangle {
-      color: Color.popups.background
-      radius: Style.radius.sm
+      color: Color.background
+      radius: Style.cornerRadius
       border.color: root.line
       border.width: 1
     }
-    ControlsBasic.Calendar {
-      anchors.fill: parent
-      anchors.margins: Style.spacing.sm
-      onClicked: function(date) {
-        var d = new Date(date)
-        var y = d.getFullYear()
-        var m = String(d.getMonth() + 1).padStart(2, '0')
-        var day = String(d.getDate()).padStart(2, '0')
-        root.editDefer = y + '-' + m + '-' + day
-        root.formDirty = true
-        deferDatePopup.close()
+    Column {
+      anchors.centerIn: parent
+      spacing: Style.spacing.md
+      Text {
+        text: "Date picker disabled (QML singleton issue)"
+        color: root.textColor
+        font.family: root.fontFamily
+      }
+      Row {
+        spacing: Style.spacing.md
+        Button {
+          text: "Use today"
+          onClicked: {
+            var d = new Date()
+            var y = d.getFullYear()
+            var m = String(d.getMonth() + 1).padStart(2, '0')
+            var day = String(d.getDate()).padStart(2, '0')
+            root.editDefer = y + '-' + m + '-' + day
+            root.formDirty = true
+            deferDatePopup.close()
+          }
+        }
+        Button {
+          text: "Clear"
+          onClicked: {
+            root.editDefer = ""
+            root.formDirty = true
+            deferDatePopup.close()
+          }
+        }
+        Button {
+          text: "Cancel"
+          onClicked: deferDatePopup.close()
+        }
       }
     }
   }
@@ -2289,7 +2335,7 @@ readonly property var primaryViews: [
         id: controls
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
-        spacing: Style.spacing.sm
+        spacing: Style.spacing.md
 
         Button {
           text: "search"
@@ -3603,7 +3649,7 @@ readonly property var primaryViews: [
             // ---- Item pane
             Column {
               width: parent.width
-              spacing: Style.spacing.sm
+              spacing: Style.spacing.md
               visible: !root.settingsOpen
 
               Text {
@@ -4126,7 +4172,7 @@ Row {
 
                    Row {
                      width: parent.width
-                     spacing: Style.spacing.sm
+                     spacing: Style.spacing.md
 
                      Text {
                        width: parent.width - attachButtons.width - parent.spacing
