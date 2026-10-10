@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.Basic as ControlsBasic
 import QtQuick.Dialogs
 import Quickshell
 import Quickshell.Io
@@ -2021,6 +2022,67 @@ readonly property var primaryViews: [
     }
   }
 
+  // Simple date picker popups for deadline and defer date
+  Popup {
+    id: dueDatePopup
+    modal: true
+    focus: true
+    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+    x: parent.width / 2 - width / 2
+    y: parent.height / 2 - height / 2
+    width: Style.space(320)
+    height: Style.space(280)
+    background: Rectangle {
+      color: Color.popups.background
+      radius: Style.radius.sm
+      border.color: root.line
+      border.width: 1
+    }
+    ControlsBasic.Calendar {
+      anchors.fill: parent
+      anchors.margins: Style.spacing.sm
+      onClicked: function(date) {
+        var d = new Date(date)
+        var y = d.getFullYear()
+        var m = String(d.getMonth() + 1).padStart(2, '0')
+        var day = String(d.getDate()).padStart(2, '0')
+        root.editDue = y + '-' + m + '-' + day
+        root.formDirty = true
+        dueDatePopup.close()
+      }
+    }
+  }
+
+  Popup {
+    id: deferDatePopup
+    modal: true
+    focus: true
+    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+    x: parent.width / 2 - width / 2
+    y: parent.height / 2 - height / 2
+    width: Style.space(320)
+    height: Style.space(280)
+    background: Rectangle {
+      color: Color.popups.background
+      radius: Style.radius.sm
+      border.color: root.line
+      border.width: 1
+    }
+    ControlsBasic.Calendar {
+      anchors.fill: parent
+      anchors.margins: Style.spacing.sm
+      onClicked: function(date) {
+        var d = new Date(date)
+        var y = d.getFullYear()
+        var m = String(d.getMonth() + 1).padStart(2, '0')
+        var day = String(d.getDate()).padStart(2, '0')
+        root.editDefer = y + '-' + m + '-' + day
+        root.formDirty = true
+        deferDatePopup.close()
+      }
+    }
+  }
+
   PanelKeyCatcher {
     id: keyCatcher
     anchors.fill: parent
@@ -3884,6 +3946,15 @@ text: root.editTitle
                       enabled: !root.busy
                       onClicked: root.shiftDate("editDue", dueField)
                     }
+                    Button {
+                      text: "calendar"
+                      bordered: true
+                      fontFamily: root.fontFamily
+                      fontSize: Style.font.caption
+                      foreground: root.textColor
+                      enabled: !root.busy
+                      onClicked: dueDatePopup.open()
+                    }
                   }
 
                   Text {
@@ -3936,6 +4007,15 @@ text: root.editTitle
                       foreground: root.textColor
                       enabled: !root.busy
                       onClicked: root.shiftDate("editDefer", deferField)
+                    }
+                    Button {
+                      text: "calendar"
+                      bordered: true
+                      fontFamily: root.fontFamily
+                      fontSize: Style.font.caption
+                      foreground: root.textColor
+                      enabled: !root.busy
+                      onClicked: deferDatePopup.open()
                     }
                   }
 
