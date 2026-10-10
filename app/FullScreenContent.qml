@@ -2123,7 +2123,7 @@ readonly property var primaryViews: [
   // If the window is too narrow to show the full layout, drop to a compact
   // message asking to enlarge the window (as requested). 1080 is the chosen
   // threshold.
-  readonly property bool tooNarrow: width < 1080
+  readonly property bool tooNarrow: width < 768
 
   MouseArea {
     anchors.fill: parent
@@ -2137,7 +2137,7 @@ readonly property var primaryViews: [
     textFormat: Text.PlainText
     horizontalAlignment: Text.AlignHCenter
     verticalAlignment: Text.AlignVCenter
-    text: "Please enlarge the window to show its content (min 1080px width)"
+    text: "Please enlarge the window to show its content (min 768px width)"
     color: root.dim
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
