@@ -2137,7 +2137,7 @@ readonly property var primaryViews: [
     textFormat: Text.PlainText
     horizontalAlignment: Text.AlignHCenter
     verticalAlignment: Text.AlignVCenter
-    text: "Please enlarge the window to show its content (min 768px width)"
+    text: " OmaGTD — Please enlarge the window to show its content (min 768px width)"
     color: root.dim
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
