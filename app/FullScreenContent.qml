@@ -2120,10 +2120,38 @@ readonly property var primaryViews: [
 
   // ---- Rendering ------------------------------------------------------------
 
+  // If the window is too narrow to show the full layout, drop to a compact
+  // message asking to enlarge the window (as requested). 1080 is the chosen
+  // threshold.
+  readonly property bool tooNarrow: width < 1080
+
   MouseArea {
     anchors.fill: parent
     acceptedButtons: Qt.NoButton
     onWheel: function(wheel) { }
+    visible: root.tooNarrow
+  }
+
+  Text {
+    anchors.centerIn: parent
+    textFormat: Text.PlainText
+    horizontalAlignment: Text.AlignHCenter
+    verticalAlignment: Text.AlignVCenter
+    text: "Please enlarge the window to show its content (min 1080px width)"
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.body
+    visible: root.tooNarrow
+    wrapMode: Text.WordWrap
+  }
+
+  // ---- Rendering ------------------------------------------------------------
+
+  MouseArea {
+    anchors.fill: parent
+    acceptedButtons: Qt.NoButton
+    onWheel: function(wheel) { }
+    visible: !root.tooNarrow
   }
 
   Column {
@@ -2131,6 +2159,7 @@ readonly property var primaryViews: [
     anchors.fill: parent
     anchors.margins: Style.spacing.xxl
     spacing: Style.spacing.md
+    visible: !root.tooNarrow
 
     // ---- Header
     Item {
