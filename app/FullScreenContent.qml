@@ -2076,8 +2076,8 @@ readonly property var primaryViews: [
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
-    width: Style.space(260)
-    height: Style.space(140)
+    width: Style.space(320)
+    height: Style.space(320)
     background: Rectangle {
       color: Color.background
       radius: Style.cornerRadius
@@ -2088,34 +2088,84 @@ readonly property var primaryViews: [
       anchors.fill: parent
       anchors.margins: Style.spacing.md
       spacing: Style.spacing.sm
-      Text {
-        text: "Pick date"
-        color: root.textColor
-        font.family: root.fontFamily
-      }
-      Grid {
-        columns: 4
+      Row {
+        width: parent.width
         spacing: Style.spacing.xs
         Button {
-          text: "+1d"
+          text: "‹"
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
-          onClicked: { root.shiftDate("editDue", dueField); dueDatePopup.close() }
+          onClicked: root.shiftPickerMonth(-1)
+        }
+        Text {
+          text: root.pickerMonth
+          color: root.textColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          anchors.verticalCenter: parent.verticalCenter
+          width: parent.width - 80
+          horizontalAlignment: Text.AlignHCenter
         }
         Button {
-          text: "+7d"
+          text: "›"
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
-          onClicked: { root.shiftDate("editDue", dueField, 7); dueDatePopup.close() }
+          onClicked: root.shiftPickerMonth(1)
         }
-        Button {
-          text: "tomorrow"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: { root.shiftDate("editDue", dueField, 1); dueDatePopup.close() }
+      }
+      Grid {
+        columns: 7
+        spacing: Style.spacing.xs
+        Repeater {
+          model: ["M","T","W","T","F","S","S"]
+          delegate: Text {
+            text: modelData
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            width: (parent.width - 6 * Style.spacing.xs) / 7
+          }
         }
+      }
+      Column {
+        width: parent.width
+        spacing: Style.spacing.xs
+        Repeater {
+          model: root.pickerWeeks
+          delegate: Row {
+            required property var modelData
+            width: parent.width
+            spacing: Style.spacing.xs
+            Repeater {
+              model: modelData
+              delegate: Button {
+                required property var modelData
+                text: modelData.day.toString()
+                width: (parent.width - 6 * Style.spacing.xs) / 7
+                height: Style.space(28)
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                enabled: modelData.inMonth
+                onClicked: {
+                  var date = modelData.date
+                  if (root.pickerTarget === "due") {
+                    root.editDue = date
+                  } else {
+                    root.editDefer = date
+                  }
+                  root.formDirty = true
+                  dueDatePopup.close()
+                }
+              }
+            }
+          }
+        }
+      }
+      Row {
+        spacing: Style.spacing.xs
         Button {
-          text: "today"
+          text: "Today"
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
           onClicked: {
@@ -2123,20 +2173,22 @@ readonly property var primaryViews: [
             var y = d.getFullYear()
             var m = String(d.getMonth() + 1).padStart(2, '0')
             var day = String(d.getDate()).padStart(2, '0')
-            root.editDue = y + '-' + m + '-' + day
+            if (root.pickerTarget === "due") {
+              root.editDue = y + '-' + m + '-' + day
+            } else {
+              root.editDefer = y + '-' + m + '-' + day
+            }
             root.formDirty = true
             dueDatePopup.close()
           }
         }
-      }
-      Row {
-        spacing: Style.spacing.xs
         Button {
           text: "Clear"
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
           onClicked: {
-            root.editDue = ""
+            if (root.pickerTarget === "due") root.editDue = ""
+            else root.editDefer = ""
             root.formDirty = true
             dueDatePopup.close()
           }
