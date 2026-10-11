@@ -179,6 +179,10 @@ readonly property var primaryViews: [
   }
   property var pickerWeeks: buildPickerWeeks(pickerMonth)
   property string pickerTarget: "due"
+  // The clock a picked day lands on. Seeded from the settings default each
+  // time the popup opens; an empty box keeps the day bare so the backend
+  // applies the same setting.
+  property string pickerTime: ""
   readonly property string pickerLabel: {
     var names = ["January", "February", "March", "April", "May", "June",
                  "July", "August", "September", "October", "November", "December"]
@@ -361,6 +365,9 @@ readonly property var primaryViews: [
           // and Enter only act on rows, so step forward to the first real one.
           while (root.rowSelected < root.rows.length
                  && root.rows[root.rowSelected].kind === "header") root.rowSelected++
+          // The selection is live even before the code loads: show its editor
+          // straight away instead of an empty pane.
+          root.syncDetailToSelection()
         } catch (e) {
           root.status = "could not read the list"
         }
@@ -650,10 +657,32 @@ readonly property var primaryViews: [
     root.reloadDetail(id)
   }
 
+  // Point the middle cursor at a row and let the right column follow it, so a
+  // single click (or a j/k step) both selects and reveals the editor.
+  function selectRow(index) {
+    if (index < 0 || index >= root.rows.length) return
+    root.column = 1
+    root.rowSelected = index
+    root.reloadDetail()
+  }
+
+  // Make the editor show whatever the middle cursor now sits on, loading it
+  // only when it is not already the one on screen. Keeps the pane in step with
+  // a fresh list without a redundant `gtd show` on every poll.
+  function syncDetailToSelection() {
+    if (!root.opened || root.column < 1) return
+    var target = root.selectedItem()
+    if (!target || !target.id) return
+    if (root.detail && String(target.id) === root.detailWantedId) return
+    root.reloadDetail()
+  }
+
   function maybeRefreshDetail() {
     // Only refresh something that is actually on screen. During a load the
     // detail is null, and reloading then would clear the request in flight.
-    if (root.opened && root.column === 2 && root.detail) root.reloadDetail()
+    // The right column mirrors the middle cursor, so a task stays refreshed
+    // even when the keyboard never stepped into the editor.
+    if (root.opened && root.detail && root.column >= 1) root.reloadDetail()
   }
 
   // ---- The selection --------------------------------------------------------
@@ -1068,6 +1097,17 @@ readonly property var primaryViews: [
     return ""
   }
 
+  // The record the store keeps on every task: when it was captured, last
+  // edited, and finished. Read-only, and the same stamps the database holds.
+  function itemTimes(item) {
+    if (!item) return ""
+    var bits = []
+    if (item.created_at) bits.push("created " + root.stamp16(item.created_at))
+    if (item.updated_at) bits.push("edited " + root.stamp16(item.updated_at))
+    if (item.completed_at) bits.push("completed " + root.stamp16(item.completed_at))
+    return bits.join("   ·   ")
+  }
+
   // Finished tasks are struck through: visible only in search, and visibly not
   // something still to be done.
   function isArchived(item) {
@@ -1233,6 +1273,7 @@ readonly property var primaryViews: [
     root.rows = root.dayRows(root.calendarCellFor(date))
     root.rowSelected = 0
     root.column = 1
+    root.syncDetailToSelection()
   }
 
   function loadCalendar(data) {
@@ -1288,7 +1329,19 @@ readonly property var primaryViews: [
     root.pickerTarget = target
     root.pickerMonth = root.today.slice(0, 7)
     root.pickerWeeks = root.buildPickerWeeks(root.pickerMonth)
+    root.pickerTime = root.formatClock(root.dueTime)
     dueDatePopup.open()
+  }
+
+  // A picked day plus the box's clock. With an empty clock the day stays bare
+  // and the backend folds in the settings default, exactly as before.
+  function pickDate(date) {
+    var time = String(root.pickerTime || "").trim()
+    var value = time === "" ? date : date + " " + time
+    if (root.pickerTarget === "due") root.editDue = value
+    else root.editDefer = value
+    root.formDirty = true
+    dueDatePopup.close()
   }
 
   function goToday() {
@@ -1927,6 +1980,9 @@ readonly property var primaryViews: [
       root.rowSelected = j
       var list = (!root.projectFocused && root.view.key === "calendar") ? dayList : listView
       list.positionViewAtIndex(j, ListView.Contain)
+      // The right column follows the cursor: whatever the middle column has
+      // lit is what its editor shows, without a separate step into it.
+      root.reloadDetail()
     }
   }
 
@@ -2090,7 +2146,7 @@ readonly property var primaryViews: [
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
     width: Style.space(340)
-    height: Style.space(380)
+    height: Style.space(420)
     background: Rectangle {
       color: Color.background
       radius: Style.cornerRadius
@@ -2153,17 +2209,36 @@ readonly property var primaryViews: [
             fontSize: Style.font.caption
             foreground: modelData.isToday ? root.accent
               : (modelData.inMonth ? root.textColor : root.dim)
-            onClicked: {
-              var date = modelData.date
-              if (root.pickerTarget === "due") {
-                root.editDue = date
-              } else {
-                root.editDefer = date
-              }
-              root.formDirty = true
-              dueDatePopup.close()
-            }
+            onClicked: root.pickDate(modelData.date)
           }
+        }
+      }
+      Row {
+        width: parent.width
+        spacing: Style.spacing.xs
+        Text {
+          text: "time"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          anchors.verticalCenter: parent.verticalCenter
+        }
+        TextField {
+          id: pickerTimeField
+          width: parent.width - pickerTimeClear.width - parent.spacing * 2 - Style.space(40)
+          foreground: root.textColor
+          placeholderText: "all day, or 09:30"
+          text: root.pickerTime
+          onTextEdited: root.pickerTime = text
+        }
+        Button {
+          id: pickerTimeClear
+          text: "clear"
+          bordered: true
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          foreground: root.textColor
+          onClicked: root.pickerTime = ""
         }
       }
       Row {
@@ -2177,13 +2252,7 @@ readonly property var primaryViews: [
             var y = d.getFullYear()
             var m = String(d.getMonth() + 1).padStart(2, '0')
             var day = String(d.getDate()).padStart(2, '0')
-            if (root.pickerTarget === "due") {
-              root.editDue = y + '-' + m + '-' + day
-            } else {
-              root.editDefer = y + '-' + m + '-' + day
-            }
-            root.formDirty = true
-            dueDatePopup.close()
+            root.pickDate(y + '-' + m + '-' + day)
           }
         }
         Button {
@@ -2760,8 +2829,7 @@ readonly property var primaryViews: [
               var i = 0
               while (i < root.rows.length && root.rows[i].kind === "header") i++
               if (i < root.rows.length) {
-                root.column = 1
-                root.rowSelected = i
+                root.selectRow(i)
                 listView.positionViewAtIndex(i, ListView.Beginning)
                 keyCatcher.forceActiveFocus()
               }
@@ -2850,7 +2918,7 @@ readonly property var primaryViews: [
 
              MouseArea {
                 anchors.fill: parent
-                onClicked: { root.column = 1; root.rowSelected = row.index }
+                onClicked: root.selectRow(row.index)
                 onDoubleClicked: {
                   if (row.modelData.id) {
                     root.column = 2
@@ -3161,7 +3229,7 @@ readonly property var primaryViews: [
 
               MouseArea {
                 anchors.fill: parent
-                onClicked: { root.column = 1; root.rowSelected = dayRow.index }
+                onClicked: root.selectRow(dayRow.index)
                 onDoubleClicked: if (dayRow.modelData.id) root.showItem(dayRow.modelData.id)
               }
             }
@@ -3900,6 +3968,17 @@ readonly property var primaryViews: [
                   text: "edit"
                   foreground: root.dim
                   fontFamily: root.fontFamily
+                }
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  wrapMode: Text.WordWrap
+                  visible: text !== ""
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: root.itemTimes(root.detail && root.detail.item)
                 }
 
                  Column {
