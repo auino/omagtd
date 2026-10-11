@@ -2113,20 +2113,16 @@ readonly property var primaryViews: [
           onClicked: root.shiftPickerMonth(1)
         }
       }
-      Grid {
-        columns: 7
+      Row {
+        width: parent.width
         spacing: Style.spacing.xs
-        Repeater {
-          model: ["M","T","W","T","F","S","S"]
-          delegate: Text {
-            text: modelData
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
-            width: (parent.width - 6 * Style.spacing.xs) / 7
-          }
-        }
+        Text { text: "M"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
+        Text { text: "T"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
+        Text { text: "W"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
+        Text { text: "T"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
+        Text { text: "F"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
+        Text { text: "S"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
+        Text { text: "S"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
       }
       Column {
         width: parent.width
@@ -2134,21 +2130,21 @@ readonly property var primaryViews: [
         Repeater {
           model: root.pickerWeeks
           delegate: Row {
-            required property var modelData
+            property var week: modelData
             width: parent.width
             spacing: Style.spacing.xs
             Repeater {
-              model: modelData
+              model: week
               delegate: Button {
-                required property var modelData
-                text: modelData.day.toString()
+                property var dayCell: modelData
+                text: dayCell.day.toString()
                 width: (parent.width - 6 * Style.spacing.xs) / 7
                 height: Style.space(28)
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
-                enabled: modelData.inMonth
+                enabled: dayCell.inMonth
                 onClicked: {
-                  var date = modelData.date
+                  var date = dayCell.date
                   if (root.pickerTarget === "due") {
                     root.editDue = date
                   } else {
