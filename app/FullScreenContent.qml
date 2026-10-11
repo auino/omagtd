@@ -2030,8 +2030,8 @@ readonly property var primaryViews: [
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
-    width: Style.space(320)
-    height: Style.space(180)
+    width: Style.space(260)
+    height: Style.space(140)
     background: Rectangle {
       color: Color.background
       radius: Style.cornerRadius
@@ -2048,71 +2048,43 @@ readonly property var primaryViews: [
         font.family: root.fontFamily
       }
       Grid {
-        columns: 7
+        columns: 4
         spacing: Style.spacing.xs
-        Repeater {
-          model: ["S","M","T","W","T","F","S"]
-          delegate: Text {
-            text: modelData
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
-            width: Style.space(24)
-          }
+        Button {
+          text: "+1d"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: { root.shiftDate("editDue", dueField); dueDatePopup.close() }
         }
-        Repeater {
-          model: 7
-          delegate: Button {
-            text: (modelData + 1).toString()
-            width: Style.space(28)
-            height: Style.space(24)
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: {
-              var d = new Date()
-              d.setDate(modelData + 1)
-              var y = d.getFullYear()
-              var m = String(d.getMonth() + 1).padStart(2, '0')
-              var day = String(d.getDate()).padStart(2, '0')
-              root.editDue = y + '-' + m + '-' + day
-              root.formDirty = true
-              dueDatePopup.close()
-            }
+        Button {
+          text: "+7d"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: { root.shiftDate("editDue", dueField, 7); dueDatePopup.close() }
+        }
+        Button {
+          text: "tomorrow"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: { root.shiftDate("editDue", dueField, 1); dueDatePopup.close() }
+        }
+        Button {
+          text: "today"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: {
+            var d = new Date()
+            var y = d.getFullYear()
+            var m = String(d.getMonth() + 1).padStart(2, '0')
+            var day = String(d.getDate()).padStart(2, '0')
+            root.editDue = y + '-' + m + '-' + day
+            root.formDirty = true
+            dueDatePopup.close()
           }
         }
       }
       Row {
         spacing: Style.spacing.xs
-        Button {
-          text: "Today"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: {
-            var d = new Date()
-            var y = d.getFullYear()
-            var m = String(d.getMonth() + 1).padStart(2, '0')
-            var day = String(d.getDate()).padStart(2, '0')
-            root.editDue = y + '-' + m + '-' + day
-            root.formDirty = true
-            dueDatePopup.close()
-          }
-        }
-        Button {
-          text: "Tomorrow"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: {
-            var d = new Date()
-            d.setDate(d.getDate() + 1)
-            var y = d.getFullYear()
-            var m = String(d.getMonth() + 1).padStart(2, '0')
-            var day = String(d.getDate()).padStart(2, '0')
-            root.editDue = y + '-' + m + '-' + day
-            root.formDirty = true
-            dueDatePopup.close()
-          }
-        }
         Button {
           text: "Clear"
           fontFamily: root.fontFamily
@@ -2140,8 +2112,8 @@ readonly property var primaryViews: [
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
-    width: Style.space(320)
-    height: Style.space(180)
+    width: Style.space(260)
+    height: Style.space(140)
     background: Rectangle {
       color: Color.background
       radius: Style.cornerRadius
@@ -2158,71 +2130,43 @@ readonly property var primaryViews: [
         font.family: root.fontFamily
       }
       Grid {
-        columns: 7
+        columns: 4
         spacing: Style.spacing.xs
-        Repeater {
-          model: ["S","M","T","W","T","F","S"]
-          delegate: Text {
-            text: modelData
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            horizontalAlignment: Text.AlignHCenter
-            width: Style.space(24)
-          }
+        Button {
+          text: "+1d"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: { root.shiftDate("editDefer", deferField); deferDatePopup.close() }
         }
-        Repeater {
-          model: 7
-          delegate: Button {
-            text: (modelData + 1).toString()
-            width: Style.space(28)
-            height: Style.space(24)
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            onClicked: {
-              var d = new Date()
-              d.setDate(modelData + 1)
-              var y = d.getFullYear()
-              var m = String(d.getMonth() + 1).padStart(2, '0')
-              var day = String(d.getDate()).padStart(2, '0')
-              root.editDefer = y + '-' + m + '-' + day
-              root.formDirty = true
-              deferDatePopup.close()
-            }
+        Button {
+          text: "+7d"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: { root.shiftDate("editDefer", deferField, 7); deferDatePopup.close() }
+        }
+        Button {
+          text: "tomorrow"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: { root.shiftDate("editDefer", deferField, 1); deferDatePopup.close() }
+        }
+        Button {
+          text: "today"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: {
+            var d = new Date()
+            var y = d.getFullYear()
+            var m = String(d.getMonth() + 1).padStart(2, '0')
+            var day = String(d.getDate()).padStart(2, '0')
+            root.editDefer = y + '-' + m + '-' + day
+            root.formDirty = true
+            deferDatePopup.close()
           }
         }
       }
       Row {
         spacing: Style.spacing.xs
-        Button {
-          text: "Today"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: {
-            var d = new Date()
-            var y = d.getFullYear()
-            var m = String(d.getMonth() + 1).padStart(2, '0')
-            var day = String(d.getDate()).padStart(2, '0')
-            root.editDefer = y + '-' + m + '-' + day
-            root.formDirty = true
-            deferDatePopup.close()
-          }
-        }
-        Button {
-          text: "Tomorrow"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: {
-            var d = new Date()
-            d.setDate(d.getDate() + 1)
-            var y = d.getFullYear()
-            var m = String(d.getMonth() + 1).padStart(2, '0')
-            var day = String(d.getDate()).padStart(2, '0')
-            root.editDefer = y + '-' + m + '-' + day
-            root.formDirty = true
-            deferDatePopup.close()
-          }
-        }
         Button {
           text: "Clear"
           fontFamily: root.fontFamily
