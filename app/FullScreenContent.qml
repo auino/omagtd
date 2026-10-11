@@ -173,6 +173,12 @@ readonly property var primaryViews: [
   property var calendarData: null
   property var calendarWeeks: []
   property string calendarSelectedDate: ""
+  property string pickerMonth: {
+    var d = new Date()
+    return d.getFullYear() + "-" + (d.getMonth() < 9 ? "0" : "") + (d.getMonth() + 1)
+  }
+  property var pickerWeeks: []
+  property string pickerTarget: "due"
   readonly property string monthLabel: {
     var names = ["January", "February", "March", "April", "May", "June",
                  "July", "August", "September", "October", "November", "December"]
@@ -1240,6 +1246,46 @@ readonly property var primaryViews: [
     var d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1 + delta, 1)
     root.calendarMonth = d.getFullYear() + "-" + pad2(d.getMonth() + 1)
     root.reloadList()
+  }
+
+  function shiftPickerMonth(delta) {
+    var parts = root.pickerMonth.split("-")
+    var d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1 + delta, 1)
+    root.pickerMonth = d.getFullYear() + "-" + pad2(d.getMonth() + 1)
+    root.pickerWeeks = root.buildPickerWeeks(root.pickerMonth)
+  }
+
+  function buildPickerWeeks(monthKey) {
+    var parts = String(monthKey).split("-")
+    var year = parseInt(parts[0])
+    var month = parseInt(parts[1]) - 1
+    var firstDow = (new Date(year, month, 1).getDay() + 6) % 7
+    var weeks = []
+    var cursor = new Date(year, month, 1 - firstDow)
+    for (var w = 0; w < 6; w++) {
+      var week = []
+      for (var d = 0; d < 7; d++) {
+        var key = cursor.getFullYear() + "-" + pad2(cursor.getMonth() + 1)
+          + "-" + pad2(cursor.getDate())
+        week.push({
+          date: key,
+          day: cursor.getDate(),
+          inMonth: cursor.getMonth() === month,
+          isToday: key === root.today
+        })
+        cursor.setDate(cursor.getDate() + 1)
+      }
+      weeks.push(week)
+    }
+    return weeks
+  }
+
+  function openPicker(target) {
+    root.pickerTarget = target
+    root.pickerMonth = root.today.slice(0, 7)
+    root.pickerWeeks = root.buildPickerWeeks(root.pickerMonth)
+    if (target === "due") dueDatePopup.open()
+    else deferDatePopup.open()
   }
 
   function goToday() {
@@ -4058,7 +4104,7 @@ text: root.editTitle
                       fontSize: Style.font.caption
                       foreground: root.textColor
                       enabled: !root.busy
-                      onClicked: dueDatePopup.open()
+                      onClicked: root.openPicker("due")
                     }
                   }
 
@@ -4121,7 +4167,7 @@ text: root.editTitle
                       fontSize: Style.font.caption
                       foreground: root.textColor
                       enabled: !root.busy
-                      onClicked: deferDatePopup.open()
+                      onClicked: root.openPicker("defer")
                     }
                   }
 
