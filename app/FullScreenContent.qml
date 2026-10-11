@@ -3969,7 +3969,7 @@ text: root.editTitle
 
                       TextField {
                         id: dueField
-                        width: parent.width - dueShiftButton.width - parent.spacing
+                        width: parent.width - dueShiftButton.width - dueCalButton.width - parent.spacing * 2
                         foreground: root.textColor
                         placeholderText: "deadline, 2026-10-05 or friday (Tab completes)"
                        text: root.editDue
@@ -3993,6 +3993,7 @@ text: root.editTitle
                       onClicked: root.shiftDate("editDue", dueField)
                     }
                     Button {
+                      id: dueCalButton
                       text: "calendar"
                       bordered: true
                       fontFamily: root.fontFamily
@@ -4033,7 +4034,7 @@ text: root.editTitle
 
                      TextField {
                        id: deferField
-                       width: parent.width - deferShiftButton.width - parent.spacing
+                       width: parent.width - deferShiftButton.width - deferCalButton.width - parent.spacing * 2
                        foreground: root.textColor
                        placeholderText: "defer date, <monday (Tab completes)"
                       text: root.editDefer
@@ -4055,6 +4056,7 @@ text: root.editTitle
                       onClicked: root.shiftDate("editDefer", deferField)
                     }
                     Button {
+                      id: deferCalButton
                       text: "calendar"
                       bordered: true
                       fontFamily: root.fontFamily
