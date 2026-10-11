@@ -3994,7 +3994,7 @@ text: root.editTitle
                     }
                     Button {
                       id: dueCalButton
-                      text: "calendar"
+                      text: "pick"
                       bordered: true
                       fontFamily: root.fontFamily
                       fontSize: Style.font.caption
@@ -4057,7 +4057,7 @@ text: root.editTitle
                     }
                     Button {
                       id: deferCalButton
-                      text: "calendar"
+                      text: "pick"
                       bordered: true
                       fontFamily: root.fontFamily
                       fontSize: Style.font.caption
