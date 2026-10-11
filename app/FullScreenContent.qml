@@ -179,6 +179,13 @@ readonly property var primaryViews: [
   }
   property var pickerWeeks: buildPickerWeeks(pickerMonth)
   property string pickerTarget: "due"
+  readonly property string pickerLabel: {
+    var names = ["January", "February", "March", "April", "May", "June",
+                 "July", "August", "September", "October", "November", "December"]
+    var parts = String(root.pickerMonth).split("-")
+    var m = parseInt(parts[1]) - 1
+    return (names[m] || parts[1]) + " " + parts[0]
+  }
   readonly property string monthLabel: {
     var names = ["January", "February", "March", "April", "May", "June",
                  "July", "August", "September", "October", "November", "December"]
@@ -1260,32 +1267,27 @@ readonly property var primaryViews: [
     var year = parseInt(parts[0])
     var month = parseInt(parts[1]) - 1
     var firstDow = (new Date(year, month, 1).getDay() + 6) % 7
-    var weeks = []
+    var cells = []
     var cursor = new Date(year, month, 1 - firstDow)
-    for (var w = 0; w < 6; w++) {
-      var week = []
-      for (var d = 0; d < 7; d++) {
-        var key = cursor.getFullYear() + "-" + pad2(cursor.getMonth() + 1)
-          + "-" + pad2(cursor.getDate())
-        week.push({
-          date: key,
-          day: cursor.getDate(),
-          inMonth: cursor.getMonth() === month,
-          isToday: key === root.today
-        })
-        cursor.setDate(cursor.getDate() + 1)
-      }
-      weeks.push(week)
+    for (var i = 0; i < 42; i++) {
+      var key = cursor.getFullYear() + "-" + pad2(cursor.getMonth() + 1)
+        + "-" + pad2(cursor.getDate())
+      cells.push({
+        date: key,
+        day: cursor.getDate(),
+        inMonth: cursor.getMonth() === month,
+        isToday: key === root.today
+      })
+      cursor.setDate(cursor.getDate() + 1)
     }
-    return weeks
+    return cells
   }
 
   function openPicker(target) {
     root.pickerTarget = target
     root.pickerMonth = root.today.slice(0, 7)
     root.pickerWeeks = root.buildPickerWeeks(root.pickerMonth)
-    if (target === "due") dueDatePopup.open()
-    else deferDatePopup.open()
+    dueDatePopup.open()
   }
 
   function goToday() {
@@ -2076,8 +2078,8 @@ readonly property var primaryViews: [
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
-    width: Style.space(320)
-    height: Style.space(320)
+    width: Style.space(340)
+    height: Style.space(380)
     background: Rectangle {
       color: Color.background
       radius: Style.cornerRadius
@@ -2098,7 +2100,7 @@ readonly property var primaryViews: [
           onClicked: root.shiftPickerMonth(-1)
         }
         Text {
-          text: root.pickerMonth
+          text: root.pickerLabel
           color: root.textColor
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -2124,36 +2126,31 @@ readonly property var primaryViews: [
         Text { text: "S"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
         Text { text: "S"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption; horizontalAlignment: Text.AlignHCenter; width: (parent.width - 6 * Style.spacing.xs) / 7 }
       }
-      Column {
+      Grid {
+        columns: 7
+        rowSpacing: Style.spacing.xs
+        columnSpacing: Style.spacing.xs
         width: parent.width
-        spacing: Style.spacing.xs
         Repeater {
           model: root.pickerWeeks
-          delegate: Row {
-            property var week: modelData
-            width: parent.width
-            spacing: Style.spacing.xs
-            Repeater {
-              model: week
-              delegate: Button {
-                property var dayCell: modelData
-                text: dayCell.day.toString()
-                width: (parent.width - 6 * Style.spacing.xs) / 7
-                height: Style.space(28)
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                enabled: dayCell.inMonth
-                onClicked: {
-                  var date = dayCell.date
-                  if (root.pickerTarget === "due") {
-                    root.editDue = date
-                  } else {
-                    root.editDefer = date
-                  }
-                  root.formDirty = true
-                  dueDatePopup.close()
-                }
+          delegate: Button {
+            required property var modelData
+            text: String(modelData.day)
+            width: (parent.width - 6 * Style.spacing.xs) / 7
+            height: Style.space(28)
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            foreground: modelData.isToday ? root.accent
+              : (modelData.inMonth ? root.textColor : root.dim)
+            onClicked: {
+              var date = modelData.date
+              if (root.pickerTarget === "due") {
+                root.editDue = date
+              } else {
+                root.editDefer = date
               }
+              root.formDirty = true
+              dueDatePopup.close()
             }
           }
         }
@@ -2194,88 +2191,6 @@ readonly property var primaryViews: [
           fontFamily: root.fontFamily
           fontSize: Style.font.caption
           onClicked: dueDatePopup.close()
-        }
-      }
-    }
-  }
-
-  Popup {
-    id: deferDatePopup
-    modal: true
-    focus: true
-    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
-    x: parent.width / 2 - width / 2
-    y: parent.height / 2 - height / 2
-    width: Style.space(260)
-    height: Style.space(140)
-    background: Rectangle {
-      color: Color.background
-      radius: Style.cornerRadius
-      border.color: root.line
-      border.width: 1
-    }
-    Column {
-      anchors.fill: parent
-      anchors.margins: Style.spacing.md
-      spacing: Style.spacing.sm
-      Text {
-        text: "Pick date"
-        color: root.textColor
-        font.family: root.fontFamily
-      }
-      Grid {
-        columns: 4
-        spacing: Style.spacing.xs
-        Button {
-          text: "+1d"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: { root.shiftDate("editDefer", deferField); deferDatePopup.close() }
-        }
-        Button {
-          text: "+7d"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: { root.shiftDate("editDefer", deferField, 7); deferDatePopup.close() }
-        }
-        Button {
-          text: "tomorrow"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: { root.shiftDate("editDefer", deferField, 1); deferDatePopup.close() }
-        }
-        Button {
-          text: "today"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: {
-            var d = new Date()
-            var y = d.getFullYear()
-            var m = String(d.getMonth() + 1).padStart(2, '0')
-            var day = String(d.getDate()).padStart(2, '0')
-            root.editDefer = y + '-' + m + '-' + day
-            root.formDirty = true
-            deferDatePopup.close()
-          }
-        }
-      }
-      Row {
-        spacing: Style.spacing.xs
-        Button {
-          text: "Clear"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: {
-            root.editDefer = ""
-            root.formDirty = true
-            deferDatePopup.close()
-          }
-        }
-        Button {
-          text: "Close"
-          fontFamily: root.fontFamily
-          fontSize: Style.font.caption
-          onClicked: deferDatePopup.close()
         }
       }
     }
