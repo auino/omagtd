@@ -2140,8 +2140,8 @@ readonly property var primaryViews: [
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
     x: parent.width / 2 - width / 2
     y: parent.height / 2 - height / 2
-    width: Style.space(280)
-    height: Style.space(120)
+    width: Style.space(320)
+    height: Style.space(180)
     background: Rectangle {
       color: Color.background
       radius: Style.cornerRadius
@@ -2149,17 +2149,55 @@ readonly property var primaryViews: [
       border.width: 1
     }
     Column {
-      anchors.centerIn: parent
-      spacing: Style.spacing.md
+      anchors.fill: parent
+      anchors.margins: Style.spacing.md
+      spacing: Style.spacing.sm
       Text {
-        text: "Date picker disabled (QML singleton issue)"
+        text: "Pick date"
         color: root.textColor
         font.family: root.fontFamily
       }
+      Grid {
+        columns: 7
+        spacing: Style.spacing.xs
+        Repeater {
+          model: ["S","M","T","W","T","F","S"]
+          delegate: Text {
+            text: modelData
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            horizontalAlignment: Text.AlignHCenter
+            width: Style.space(24)
+          }
+        }
+        Repeater {
+          model: 7
+          delegate: Button {
+            text: (modelData + 1).toString()
+            width: Style.space(28)
+            height: Style.space(24)
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: {
+              var d = new Date()
+              d.setDate(modelData + 1)
+              var y = d.getFullYear()
+              var m = String(d.getMonth() + 1).padStart(2, '0')
+              var day = String(d.getDate()).padStart(2, '0')
+              root.editDefer = y + '-' + m + '-' + day
+              root.formDirty = true
+              deferDatePopup.close()
+            }
+          }
+        }
+      }
       Row {
-        spacing: Style.spacing.md
+        spacing: Style.spacing.xs
         Button {
-          text: "Use today"
+          text: "Today"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
           onClicked: {
             var d = new Date()
             var y = d.getFullYear()
@@ -2171,7 +2209,24 @@ readonly property var primaryViews: [
           }
         }
         Button {
+          text: "Tomorrow"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: {
+            var d = new Date()
+            d.setDate(d.getDate() + 1)
+            var y = d.getFullYear()
+            var m = String(d.getMonth() + 1).padStart(2, '0')
+            var day = String(d.getDate()).padStart(2, '0')
+            root.editDefer = y + '-' + m + '-' + day
+            root.formDirty = true
+            deferDatePopup.close()
+          }
+        }
+        Button {
           text: "Clear"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
           onClicked: {
             root.editDefer = ""
             root.formDirty = true
@@ -2179,7 +2234,9 @@ readonly property var primaryViews: [
           }
         }
         Button {
-          text: "Cancel"
+          text: "Close"
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
           onClicked: deferDatePopup.close()
         }
       }
