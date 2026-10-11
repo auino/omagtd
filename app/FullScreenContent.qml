@@ -177,7 +177,7 @@ readonly property var primaryViews: [
     var d = new Date()
     return d.getFullYear() + "-" + (d.getMonth() < 9 ? "0" : "") + (d.getMonth() + 1)
   }
-  property var pickerWeeks: []
+  property var pickerWeeks: buildPickerWeeks(pickerMonth)
   property string pickerTarget: "due"
   readonly property string monthLabel: {
     var names = ["January", "February", "March", "April", "May", "June",
