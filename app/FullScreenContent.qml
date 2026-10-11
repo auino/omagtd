@@ -423,6 +423,7 @@ readonly property var primaryViews: [
     onExited: {
       root.commandPending = false
       root.reload()
+      root.refreshBar()
     }
     stdout: StdioCollector {
       onStreamFinished: {
@@ -450,7 +451,7 @@ readonly property var primaryViews: [
   // the structured editor on exactly that item.
   Process {
     id: captureProc
-    onExited: root.reload()
+    onExited: { root.reload(); root.refreshBar() }
     stdout: StdioCollector {
       onStreamFinished: {
         var out = String(this.text).trim()
@@ -1755,6 +1756,16 @@ readonly property var primaryViews: [
       Quickshell.execDetached(
         ["omarchy-shell", "-q", "osd", "show",
          JSON.stringify({ icon: icon, message: message, duration: 2000 })])
+    } catch (e) { }
+  }
+
+  // The bar is a separate quickshell process, so it does not see a write this
+  // app makes. Ask it to re-read the counts, which re-runs the pill text and
+  // its colour. Quiet: the standalone app has no shell to answer.
+  function refreshBar() {
+    try {
+      Quickshell.execDetached(
+        ["omarchy-shell", "-q", "com.auino.omagtd", "refresh"])
     } catch (e) { }
   }
 

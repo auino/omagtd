@@ -24,7 +24,7 @@ BarWidget {
   readonly property int dueTodayLate: panel ? panel.dueTodayLate : 0
   readonly property int overdue: panel ? panel.overdue : 0
   readonly   property int flagged: panel ? panel.flagged : 0
-  property int flaggedToday: 0
+  readonly property int flaggedToday: panel ? panel.flaggedToday : 0
 
   // Settings.
   readonly property bool compact: root.settings && root.settings.compact === true
