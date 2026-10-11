@@ -27,6 +27,10 @@ Panel {
   property var hostWidget: null
   readonly property var barIdentity: hostWidget || root
 
+  // The bundled app icon, the same one the fullscreen window's hero carries.
+  // Panel.qml lives at the plugin root, so the app folder is one level down.
+  readonly property url appIcon: Qt.resolvedUrl("app/icon.png")
+
   // ---- Counts, mirrored from `gtd bar --json`.
   property int next: 0
   property int today: 0
@@ -574,12 +578,12 @@ Panel {
             foreground: root.textColor
             fontFamily: root.fontFamily
             iconComponent: Component {
-              Text {
-                textFormat: Text.PlainText
-                text: root.overdue > 0 ? "!" : "✓"
-                color: root.overdue > 0 ? root.urgent : root.textColor
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.display
+              Image {
+                source: root.appIcon
+                sourceSize.width: Style.space(40)
+                sourceSize.height: Style.space(40)
+                fillMode: Image.PreserveAspectFit
+                opacity: root.overdue > 0 ? 1 : 0.9
               }
             }
           }
