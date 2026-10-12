@@ -97,20 +97,30 @@ QtObject {
      return fallback
    }
 
-  // The mark in front of a title. Projects and areas keep their own; a task
-  // shows what it is (status) before what it is doing (flagged, not started
-  // yet), because a waiting task is waiting whatever else is true of it. A
-  // plain task keeps the default middle dot, so the decorator column is never
-  // empty and every task reads as a list item. An explicit `deferred` overrides
-  // the future-date check, mirroring `colorFor`.
+  // The mark in front of a title, built from what is true of the item right
+  // now rather than picked from a fixed order, so every state that earns a
+  // mark gets one and none is hidden behind another. A task stacks its status
+  // mark, then its defer mark, then the flag: a flagged waiting task reads
+  // "W!", a deferred one reading "D", a plain one keeping the middle dot. A
+  // project and an area keep their own single mark. Finished work shows only
+  // its end mark. The result is padded to a steady width so titles line up
+  // down the list however many marks a row wears.
   function rowGlyph(item, deferred) {
-    if (!item) return " "
-    if (item.kind === "project") return item.completed ? "✓" : "▸"
-    if (item.kind === "area") return "▤"
-    var glyph = statusGlyphs[item.status]
-    if (glyph) return glyph
-    if (deferred === undefined ? isDeferred(item) : deferred) return "D"
-    if (item.priority > 0) return "!"
-    return "·"
+    if (!item) return "  "
+    if (item.kind === "project") return item.completed ? "✓ " : "▸ "
+    if (item.kind === "area") return "▤ "
+    var status = item.status || ""
+    var finished = status === "done" || status === "dropped" || status === "trashed"
+    var parts = []
+    var mark = statusGlyphs[status]
+    // "inbox" maps to the same dot a plain task falls back to, so it is not
+    // added twice.
+    if (mark && status !== "inbox") parts.push(mark)
+    if (!finished && (deferred === undefined ? isDeferred(item) : deferred)) parts.push("D")
+    if (!finished && item.priority > 0) parts.push("!")
+    var text = parts.join("")
+    if (text === "") text = "·"
+    while (text.length < 2) text += " "
+    return text
   }
 }
