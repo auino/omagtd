@@ -1056,6 +1056,34 @@ class Database(TempStore):
         with self.assertRaises(GtdError):
             core.capture(self.store, "Loud thing", priority=3)
 
+    def test_the_context_index_is_upgraded_to_the_covering_one(self):
+        # A v11 store carried idx_item_tags_tag(tag_id); the covering
+        # (tag_id, item_id) index answers the context joins without a table
+        # fetch, and reopening leaves only the covering one behind.
+        self.capture("Buy nails #errands")
+        legacy = os.path.join(self.home, "legacy.sqlite3")
+        destination = sqlite3.connect(legacy)
+        try:
+            self.store.db.backup(destination)
+        finally:
+            destination.close()
+        old = sqlite3.connect(legacy)
+        try:
+            old.execute("DROP INDEX IF EXISTS idx_item_tags_tag_item")
+            old.execute("CREATE INDEX idx_item_tags_tag ON item_tags(tag_id)")
+            old.execute("UPDATE meta SET value = '11' WHERE key = 'schema'")
+            old.commit()
+        finally:
+            old.close()
+
+        reopened = Store(path=legacy)
+        self.addCleanup(reopened.close)
+        indexes = {r["name"] for r in reopened.query(
+            "SELECT name FROM sqlite_master WHERE type = 'index'")}
+        self.assertIn("idx_item_tags_tag_item", indexes)
+        self.assertNotIn("idx_item_tags_tag", indexes)
+        self.assertEqual(reopened.meta("schema"), str(db_module.SCHEMA_VERSION))
+
 
 # ------------------------------------------------------------------ archive
 

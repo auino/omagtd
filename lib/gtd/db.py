@@ -15,7 +15,7 @@ import sqlite3
 import shutil
 from pathlib import Path
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
 
 # Crockford-ish alphabet: no i, l, o, u, so an id can be read aloud on the
@@ -108,6 +108,13 @@ class Store:
 
     def close(self) -> None:
         if self._conn is not None:
+            if not self.readonly:
+                # Give sqlite a chance to refresh its query-planner stats after
+                # whatever this session changed, on the way out.
+                try:
+                    self._conn.execute("PRAGMA optimize")
+                except sqlite3.Error:
+                    pass
             self._conn.close()
             self._conn = None
 
@@ -118,7 +125,9 @@ class Store:
 
         Applying the schema on every open is what lets a fresh install work
         with no setup step; every statement in schema.sql is IF NOT EXISTS, so
-        this is a no-op once the file exists.
+        this is a no-op once the file exists. The folds in `_migrate` are
+        deliberate too — they run every open so a database that recorded a
+        current version before a fold landed is still repaired.
         """
         if not self.readonly:
             self._migrate()
@@ -177,6 +186,8 @@ class Store:
             self._migrate_v10()
         if version < 11:
             self._migrate_v11()
+        if version < 12:
+            self._migrate_v12()
         self._fold_context_case()
         self._fold_priority()
         self._fold_attachment_paths()
@@ -373,6 +384,17 @@ class Store:
                     Path(old).unlink()
                 except OSError:
                     pass
+
+    def _migrate_v12(self) -> None:
+        """Replace the single-column context index with a covering one.
+
+        Counting open actions per context and filtering by context both join
+        item_tags back to items, and idx_item_tags_tag(tag_id) left sqlite to
+        fetch each row for its item_id. The covering (tag_id, item_id) index
+        answers those from the index alone; the old one is now a redundant
+        prefix of it and is dropped.
+        """
+        self.db.execute("DROP INDEX IF EXISTS idx_item_tags_tag")
 
     def _migrate_v6(self) -> None:
         """Realign every action with the new inbox rule.

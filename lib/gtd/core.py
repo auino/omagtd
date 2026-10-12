@@ -2205,6 +2205,12 @@ def search(store: Store, query: str, *, limit: int | None = 50) -> list[dict]:
     sit in, their contexts, the person an item is waiting on,
     and any attachment paths. One query over the item_titles view, so a match
     on a project or context still returns the action that carries it.
+
+    The match is a substring LIKE on purpose, not an FTS5 token match: typing
+    "e" is meant to find "Renovate", which a token index would not. That means
+    this scans item_titles, but it is bounded to the page and measured in tens
+    of milliseconds at ten thousand items, so the index is not worth the
+    behavior change here.
     """
     text = str(query or "").strip()
     if not text:

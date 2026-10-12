@@ -105,6 +105,10 @@ CREATE INDEX IF NOT EXISTS idx_items_defer    ON items(defer_at);
 CREATE INDEX IF NOT EXISTS idx_items_due      ON items(due_at);
 CREATE INDEX IF NOT EXISTS idx_items_priority ON items(priority, status);
 CREATE INDEX IF NOT EXISTS idx_items_review   ON items(review, reviewed_at);
+-- Retention reads cut on completion time, and the trash sweep on status plus
+-- updated time; both were full scans of items before.
+CREATE INDEX IF NOT EXISTS idx_items_completed ON items(completed_at);
+CREATE INDEX IF NOT EXISTS idx_items_updated   ON items(status, updated_at);
 
 -- Contexts. OmniFocus calls these tags and GTD calls them contexts; they are
 -- the same thing — where an action can be done (@errands, @computer, @home).
@@ -131,7 +135,10 @@ CREATE TABLE IF NOT EXISTS item_tags (
   PRIMARY KEY (item_id, tag_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_item_tags_tag  ON item_tags(tag_id);
+-- (tag_id, item_id) covers both "which items have this tag" and the join back
+-- to items, so the count-per-context and per-context filters never touch the
+-- table itself. item_id alone still needs its own index for the reverse.
+CREATE INDEX IF NOT EXISTS idx_item_tags_tag_item ON item_tags(tag_id, item_id);
 CREATE INDEX IF NOT EXISTS idx_item_tags_item ON item_tags(item_id);
 
 -- Attachments. An item can point at any number of files or links; the row
