@@ -214,6 +214,19 @@ readonly property var primaryViews: [
   // "settings" shows the settings pane in the right column instead of an item.
   property bool settingsOpen: false
 
+  // ---- Where the keyboard is -----------------------------------------------
+  //
+  // The cursor rests either on the header row (topFocused), on one of its
+  // controls (topIndex: 0 settings, 1 capture, 2 search, 3 the down button), or
+  // in one of the columns. Inside the left column it walks three stacked parts
+  // in turn (leftSection): the nav menu, the projects/contexts switcher, and the
+  // tree. menuSelected is the nav-menu button the cursor highlights while it is
+  // in the menu, so Tab has something to walk and Return something to pick.
+  property bool topFocused: false
+  property int topIndex: 1
+  property string leftSection: "tree"
+  property int menuSelected: 0
+
   // Mirrored from `gtd settings --json`: the clock a bare date lands on, how
   // every stored clock time is shown, and how long the empty projects and
   // contexts, and the finished tasks, are kept before they are swept. A day
@@ -746,6 +759,7 @@ readonly property var primaryViews: [
   // first editor field as soon as the form loads.
   function showItem(id, edit) {
     if (!id) return
+    root.topFocused = false
     root.column = 2
     root.settingsOpen = false
     root.detail = null
@@ -761,6 +775,7 @@ readonly property var primaryViews: [
   // single click (or a j/k step) both selects and reveals the editor.
   function selectRow(index) {
     if (index < 0 || index >= root.rows.length) return
+    root.topFocused = false
     root.column = 1
     root.rowSelected = index
     root.reloadDetail()
@@ -802,6 +817,7 @@ readonly property var primaryViews: [
       return row.modelData.id === root.projectFocus.id
         && row.modelData.kind === root.projectFocus.kind
     return row.index === root.treeSelected && root.column === 0
+      && root.leftSection === "tree" && !root.topFocused
   }
 
   function selectedRow() {
@@ -1042,6 +1058,7 @@ readonly property var primaryViews: [
     if (root.contextFocused)
       return row.modelData.name === root.contextFocus.name
     return row.index === root.contextSelected && root.column === 0
+      && root.leftSection === "tree" && !root.topFocused
   }
 
   // Point the middle column at whichever context the left cursor is on.
@@ -1081,6 +1098,7 @@ readonly property var primaryViews: [
   // middle column never disagree; an empty tree falls back to the nav view.
   function setLeftMode(mode) {
     if (root.leftMode === mode) return
+    root.topFocused = false
     root.leftMode = mode
     root.column = 0
     root.settingsOpen = false
@@ -1105,7 +1123,7 @@ readonly property var primaryViews: [
   // unfolds it (and only then walks on into the middle column). Returns true
   // when the key was spent on folding, so the caller skips the column move.
   function foldStep(dx) {
-    if (root.column !== 0 || root.leftMode !== "projects") return false
+    if (root.column !== 0 || root.leftSection !== "tree" || root.leftMode !== "projects") return false
     var row = root.selectedTreeRow()
     if (!row || row.kind !== "project") return false
     if (dx < 0) {
@@ -1129,8 +1147,7 @@ readonly property var primaryViews: [
     // Stepping back into the tree re-focuses the selected container, so the
     // middle column never keeps showing a nav view while the tree is active.
     if (root.column === 0) {
-      if (root.leftMode === "contexts") root.syncContextFocus()
-      else root.syncProjectFocus()
+      if (root.leftSection === "tree") root.syncTreeFocus()
     } else if (root.leftMode === "projects" && root.projectFocused) {
       // Leaving the tree before the settle timer fired: fetch now, so the list
       // is there the moment the cursor enters it.
@@ -2076,41 +2093,188 @@ readonly property var primaryViews: [
 
   function step(delta) {
     if (root.column === 0) {
-      // The left cursor walks whichever tree is showing.
-      if (root.leftMode === "contexts") {
-        var c = root.contextSelected + delta
-        if (c < 0 || c >= root.contextRows.length) return
-        root.contextSelected = c
-        contextView.positionViewAtIndex(c, ListView.Contain)
-        return
-      }
-      var i = root.treeSelected + delta
-      while (i >= 0 && i < root.treeRows.length && root.treeRows[i].kind === "header") i += delta
-      if (i < 0 || i >= root.treeRows.length) return
-      root.treeSelected = i
-      treeView.positionViewAtIndex(i, ListView.Contain)
+      root.stepLeft(delta)
       return
     }
     if (root.column === 1) {
       var j = root.rowSelected + delta
       while (j >= 0 && j < root.rows.length && root.rows[j].kind === "header") j += delta
-      if (j < 0 || j >= root.rows.length) return
+      if (j < 0 || j >= root.rows.length) {
+        // Up off the top of the list steps out onto the header row.
+        if (delta < 0) root.focusTopHeader()
+        return
+      }
       root.rowSelected = j
       var list = (!root.projectFocused && root.view.key === "calendar") ? dayList : listView
       list.positionViewAtIndex(j, ListView.Contain)
       // The right column follows the cursor: whatever the middle column has
       // lit is what its editor shows, without a separate step into it.
       root.reloadDetail()
+      return
     }
+    // The right column: Up/Down move between the editor's fields.
+    root.formStep(delta)
+  }
+
+  // The left column holds three things stacked: the nav menu, the switcher and
+  // the tree. Up/Down walk from one to the next — off the menu into the header,
+  // off the switcher into the tree and back — while Tab walks the buttons inside
+  // the menu and the switcher.
+  function stepLeft(delta) {
+    if (root.leftSection === "menu") {
+      if (delta < 0) root.focusTopHeader()
+      else root.leftSection = "switcher"
+      return
+    }
+    if (root.leftSection === "switcher") {
+      if (delta < 0) { root.leftSection = "menu"; return }
+      root.leftSection = "tree"
+      root.syncTreeFocus()
+      return
+    }
+    // In the tree, an Up that cannot move leaves for the switcher above it.
+    if (!root.treeStep(delta) && delta < 0) root.leftSection = "switcher"
+  }
+
+  // One row of the showing tree; false when the cursor could not move, so the
+  // caller knows it has reached the top (or bottom) of the list.
+  function treeStep(delta) {
+    if (root.leftMode === "contexts") {
+      var c = root.contextSelected + delta
+      if (c < 0 || c >= root.contextRows.length) return false
+      root.contextSelected = c
+      contextView.positionViewAtIndex(c, ListView.Contain)
+      return true
+    }
+    var i = root.treeSelected + delta
+    while (i >= 0 && i < root.treeRows.length && root.treeRows[i].kind === "header") i += delta
+    if (i < 0 || i >= root.treeRows.length) return false
+    root.treeSelected = i
+    treeView.positionViewAtIndex(i, ListView.Contain)
+    return true
+  }
+
+  function syncTreeFocus() {
+    if (root.leftMode === "contexts") root.syncContextFocus()
+    else root.syncProjectFocus()
+  }
+
+  // ---- The header row -------------------------------------------------------
+
+  // Put the keyboard on the header row, on the capture box by default. It is a
+  // field, so the key catcher steps aside and the box takes the typing; Down
+  // (and Escape, then Down) leads back out into the columns.
+  function focusTopHeader() {
+    root.topFocused = true
+    root.topIndex = 1
+    Qt.callLater(function() { captureField.forceActiveFocus() })
+  }
+
+  // Left/Right walk the header's controls; Down leaves the header for the top of
+  // the left column, so the header is never a dead end. Up has nowhere to go.
+  function moveTop(dx, dy) {
+    if (dy > 0) {
+      root.topFocused = false
+      root.column = 0
+      root.leftSection = "menu"
+      root.menuSelected = Math.max(0, root.primaryKeys.indexOf(root.view.key))
+      // The capture box may hold the caret; hand the keyboard back so the
+      // left column's keys are the left column's again.
+      keyCatcher.forceActiveFocus()
+      return
+    }
+    if (dy < 0) return
+    var next = Math.max(0, Math.min(3, root.topIndex + dx))
+    if (next === root.topIndex) return
+    root.topIndex = next
+    root.focusTopControl()
+  }
+
+  // Put the caret where topIndex points. captureField has an id here; the three
+  // buttons are focused by their own ids in the header.
+  function focusTopControl() {
+    if (root.topIndex === 1) { captureField.forceActiveFocus(); return }
+    var target = root.topIndex === 0 ? settingsButton
+               : root.topIndex === 2 ? searchButton : downButton
+    if (target) target.forceActiveFocus()
+  }
+
+  // ---- The editor's fields --------------------------------------------------
+
+  // The editor's text fields, top to bottom, as the Up/Down cursor sees them.
+  // Tab keeps moving inside a row (and completes the date and name fields); Up
+  // and Down move a whole field at a time.
+  readonly property var formFields: [
+    titleField, projectField, tagsField,
+    dueField, deferField, durationField, linkField, notesField
+  ]
+
+  function formStep(delta) {
+    if (root.settingsOpen) return
+    var fields = root.formFields
+    var n = fields.length
+    if (n === 0) return
+    var current = -1
+    for (var i = 0; i < n; i++) {
+      if (fields[i] && fields[i].activeFocus) { current = i; break }
+    }
+    // Up off the first field, or off an unfocused pane, steps out to the header.
+    if (current === 0 && delta < 0) { root.focusTopHeader(); return }
+    var next = current < 0 ? (delta > 0 ? 0 : n - 1)
+                           : Math.max(0, Math.min(n - 1, current + delta))
+    var target = fields[next]
+    if (target) target.forceActiveFocus()
   }
 
   function switchColumn(delta) {
     var next = Math.max(0, Math.min(2, root.column + delta))
+    // Left from the middle column lands in the tree, the left column's home
+    // base; the menu and switcher above it are reached with Up from there.
+    if (delta < 0 && root.column === 1 && next === 0) root.leftSection = "tree"
     if (next === 2) {
       root.settingsOpen = false
       root.reloadDetail()
     }
     root.column = next
+  }
+
+  // Tab keeps its job of cycling the middle nav views everywhere except where
+  // there is a row of its own to walk: the nav menu (its buttons) and the
+  // projects/contexts switcher (which flips between the two trees).
+  function tabStep(direction) {
+    if (root.column === 0 && root.leftSection === "menu") {
+      var n = root.primaryKeys.length
+      if (n === 0) return
+      root.menuSelected = ((root.menuSelected + direction) % n + n) % n
+      return
+    }
+    if (root.column === 0 && root.leftSection === "switcher") {
+      root.setLeftMode(root.leftMode === "projects" ? "contexts" : "projects")
+      return
+    }
+    root.cycleView(direction)
+  }
+
+  // Return/Space: pick the highlighted menu view, work the header button under
+  // the cursor, or save the editor when a field or a column below is in play.
+  function activateCursor() {
+    if (root.settingsOpen) {
+      if (root.appMode) root.closeSettingsPane()
+      else root.close()
+      return
+    }
+    if (root.topFocused) {
+      if (root.topIndex === 0) root.showSettings()
+      else if (root.topIndex === 2) root.focusSearch()
+      else if (root.topIndex === 3) root.captureAndEdit(root.captureValue)
+      return
+    }
+    if (root.column === 2 && waitToggle.activeFocus) { root.toggleWait(); return }
+    if (root.column === 0 && root.leftSection === "menu") {
+      root.pickViewByKey(root.primaryKeys[Math.max(0, root.menuSelected)])
+      return
+    }
+    root.saveEdits()
   }
 
   // Tab walks the buttons that are on screen, not the sixteen views behind
@@ -2127,6 +2291,7 @@ readonly property var primaryViews: [
 
   function pickView(n) {
     if (n >= 1 && n <= root.views.length) {
+      root.topFocused = false
       var wasFocused = root.projectFocused || root.contextFocused
       root.projectFocus = null
       root.contextFocus = null
@@ -2163,6 +2328,7 @@ readonly property var primaryViews: [
 
   // Jump to the search view and put the caret in its field.
   function focusSearch() {
+    root.topFocused = false
     root.projectFocus = null
     root.contextFocus = null
     root.viewIndex = root.viewIndexFor("search")
@@ -2404,16 +2570,15 @@ readonly property var primaryViews: [
       || searchField.activeFocus || projectNameField.activeFocus
       || importField.activeFocus || ofField.activeFocus || zipField.activeFocus
     onCloseRequested: root.handleCloseRequested()
-    onTabRequested: function(direction) { root.cycleView(direction) }
+    onTabRequested: function(direction) { root.tabStep(direction) }
     onMoveRequested: function(dx, dy) {
+      if (root.topFocused) { root.moveTop(dx, dy); return }
       if (dx !== 0) {
         if (root.foldStep(dx)) return
         root.switchColumn(dx)
       } else root.step(dy)
     }
-    onActivateRequested: root.settingsOpen
-      ? (root.appMode ? root.closeSettingsPane() : root.close())
-      : root.saveEdits()
+    onActivateRequested: root.activateCursor()
     onDeleteRequested: root.act("trash")
     onTextKey: function(t) {
       if (t === "c" || t === "C" || t === "/") root.captureFieldFocus()
@@ -2452,11 +2617,14 @@ readonly property var primaryViews: [
   }
 
   function captureFieldFocus() {
+    root.topFocused = true
+    root.topIndex = 1
     captureField.forceActiveFocus()
     captureField.selectAll()
   }
 
   function showSettings() {
+    root.topFocused = false
     root.settingsOpen = true
     root.column = 2
   }
@@ -2559,23 +2727,27 @@ readonly property var primaryViews: [
             fillMode: Image.PreserveAspectFit
           }
         }
-        trailingControl: Component {
-          Button {
-            text: "settings"
-            bordered: true
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            foreground: root.textColor
-            onClicked: root.showSettings()
-          }
-        }
+      }
+
+      // The settings button sits first on the header row, ahead of the capture
+      // box and the search/down buttons, so Left/Right walk the bar left to
+      // right: settings, capture, search, down.
+      Button {
+        id: settingsButton
+        anchors.left: hero.right
+        anchors.leftMargin: Style.spacing.sm
+        anchors.verticalCenter: parent.verticalCenter
+        text: "settings"
+        bordered: true
+        fontFamily: root.fontFamily
+        fontSize: Style.font.caption
+        foreground: root.textColor
+        onClicked: root.showSettings()
       }
 
       TextField {
         id: captureField
-        anchors.left: hero.right
-        // The hero carries the settings button, so this is the gap between
-        // that button and the field.
+        anchors.left: settingsButton.right
         anchors.leftMargin: Style.spacing.sm
         anchors.right: controls.left
         anchors.rightMargin: Style.spacing.sm
@@ -2583,17 +2755,34 @@ readonly property var primaryViews: [
         foreground: root.textColor
         placeholderText: "Capture…  #context /Project/ <defer >due =who ~repeat *30m"
         text: root.captureValue
+        // Clicking or tabbing into the box is the same as arriving from the
+        // columns with Up: the header owns the keyboard from here.
+        onActiveFocusChanged: if (activeFocus) { root.topFocused = true; root.topIndex = 1 }
         onTextEdited: root.captureValue = text
         Keys.onTabPressed: function(event) {
           root.completeCaptureField()
           event.accepted = true
         }
         onAccepted: root.capture(text)
+        // Down leaves the header for the top of the left column (the capture
+        // itself is filed by the down button beside it, or by Return).
         Keys.onDownPressed: function(event) {
-          root.captureAndEdit(root.captureValue)
+          root.moveTop(0, 1)
           event.accepted = true
         }
         Keys.onEscapePressed: function(event) { root.captureValue = ""; keyCatcher.forceActiveFocus(); event.accepted = true }
+        // With the box empty the arrows have no text to walk, so they walk the
+        // header's controls instead; with text they move the caret as usual.
+        Keys.onLeftPressed: function(event) {
+          if (captureField.text !== "") return
+          root.moveTop(-1, 0)
+          event.accepted = true
+        }
+        Keys.onRightPressed: function(event) {
+          if (captureField.text !== "") return
+          root.moveTop(1, 0)
+          event.accepted = true
+        }
       }
 
       Row {
@@ -2603,6 +2792,7 @@ readonly property var primaryViews: [
         spacing: Style.spacing.md
 
         Button {
+          id: searchButton
           text: "search"
           bordered: true
           fontFamily: root.fontFamily
@@ -2612,6 +2802,7 @@ readonly property var primaryViews: [
         }
 
         Button {
+          id: downButton
           text: "↓"
           bordered: true
           fontFamily: root.fontFamily
@@ -2664,8 +2855,13 @@ readonly property var primaryViews: [
                       : 0
                     text: root.viewLabel(modelData)
                     bordered: true
-                    selected: !root.projectFocused && !root.contextFocused
-                      && root.view && root.view.key === modelData
+                    // While the cursor is in the menu, Tab's highlight is what
+                    // is lit; otherwise the button of the showing view is.
+                    selected: root.column === 0 && root.leftSection === "menu"
+                      && !root.topFocused
+                      ? root.primaryKeys[root.menuSelected] === modelData
+                      : (!root.projectFocused && !root.contextFocused
+                         && root.view && root.view.key === modelData)
                     fontFamily: root.fontFamily
                     fontSize: Style.font.caption
                     foreground: root.textColor
@@ -2784,7 +2980,9 @@ readonly property var primaryViews: [
                          + (treeRow.modelData.depth || 0) * Style.space(14))
                    root.toggleProject(treeRow.modelData.id)
                  else {
+                   root.topFocused = false
                    root.column = 0
+                   root.leftSection = "tree"
                    root.treeSelected = treeRow.index
                    }
                  }
@@ -2864,10 +3062,12 @@ readonly property var primaryViews: [
 
             MouseArea {
               anchors.fill: parent
-              onClicked: {
-                root.column = 0
-                root.contextSelected = contextRow.index
-               }
+               onClicked: {
+                 root.topFocused = false
+                 root.column = 0
+                 root.leftSection = "tree"
+                 root.contextSelected = contextRow.index
+                }
              }
 
             DropArea {
@@ -2936,6 +3136,7 @@ readonly property var primaryViews: [
             width: parent.width
             visible: !root.projectFocused && !root.contextFocused && root.view.key === "search"
             foreground: root.textColor
+            onActiveFocusChanged: if (activeFocus) root.topFocused = false
             placeholderText: "Search titles, notes, projects, contexts, attachments…"
             text: root.searchQuery
             onTextChanged: {
@@ -4118,6 +4319,8 @@ readonly property var primaryViews: [
                      placeholderText: "title"
 text: root.editTitle
                     onTextEdited: { root.editTitle = text; root.formDirty = true }
+                     Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                     Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
                      }
 
                   Text {
@@ -4150,6 +4353,8 @@ text: root.editTitle
                      placeholderText: "project (empty sends it to the inbox)"
                     text: root.editProject
                     onTextEdited: { root.editProject = text; root.formDirty = true }
+                    Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                    Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
                     Keys.onTabPressed: function(event) {
                       // Only the leaf of a Move house>Kitchen path is completed.
                       var cut = text.lastIndexOf(">")
@@ -4191,6 +4396,8 @@ text: root.editTitle
                      placeholderText: "contexts, space separated: #errands #home>kitchen"
                     text: root.editTags
                     onTextEdited: { root.editTags = text; root.formDirty = true }
+                    Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                    Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
                     Keys.onTabPressed: function(event) {
                       // A list of contexts: complete the one being typed.
                       var m = text.match(/(\S*)$/)
@@ -4213,6 +4420,7 @@ text: root.editTitle
                 }
 
                  Toggle {
+                   id: waitToggle
                    width: parent.width
                    label: "waiting"
                    description: "on = someone else owes this; w flips it, "
@@ -4251,6 +4459,8 @@ text: root.editTitle
                        onTextEdited: { root.editDue = text; root.formDirty = true }
                        onEditingFinished: root.editDue = dueField.text
                        onAccepted: root.editDue = dueField.text
+                       Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                       Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
                        Keys.onTabPressed: function(event) {
                          root.completeDateField("editDue", dueField)
                          event.accepted = true
@@ -4312,13 +4522,15 @@ text: root.editTitle
                        width: parent.width - deferShiftButton.width - deferCalButton.width - parent.spacing * 2
                        foreground: root.textColor
                        placeholderText: "defer date, <monday (Tab completes)"
-                      text: root.editDefer
-                      onTextEdited: { root.editDefer = text; root.formDirty = true }
-                      Keys.onTabPressed: function(event) {
-                        root.completeDateField("editDefer", deferField)
-                        event.accepted = true
+                        text: root.editDefer
+                        onTextEdited: { root.editDefer = text; root.formDirty = true }
+                        Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                        Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
+                        Keys.onTabPressed: function(event) {
+                          root.completeDateField("editDefer", deferField)
+                          event.accepted = true
+                        }
                       }
-                    }
 
                     Button {
                       id: deferShiftButton
@@ -4373,6 +4585,8 @@ text: root.editTitle
                      placeholderText: "effort, 30m or 1h30m"
                     text: root.editDuration
                     onTextEdited: { root.editDuration = text; root.formDirty = true }
+                    Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                    Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
                   }
 
                   Text {
@@ -4406,10 +4620,12 @@ Row {
                        id: linkField
                        width: parent.width - openLinkButton.width - parent.spacing
                        foreground: root.textColor
-                       placeholderText: "link, https://… or a file path"
-                      text: root.editLink
-                      onTextEdited: { root.editLink = text; root.formDirty = true }
-                     }
+                        placeholderText: "link, https://… or a file path"
+                       text: root.editLink
+                       onTextEdited: { root.editLink = text; root.formDirty = true }
+                       Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                       Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
+                      }
 
                      Button {
                        id: openLinkButton
@@ -4546,6 +4762,8 @@ Row {
                      placeholderText: "notes"
 text: root.editNotes
                       onTextEdited: { root.editNotes = text; root.formDirty = true }
+                      Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                      Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
                      }
 
                   Text {
@@ -4634,7 +4852,7 @@ text: root.editNotes
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.status !== "" ? root.status
-          : "← → column  ↑↓ move  ↓ capture+edit  enter save  c capture  d done  f flag  w wait  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  tab view  esc close"
+          : "← → column  ↑↓ move  tab row/view  enter pick/save  c capture  d done  f flag  w wait  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  esc close"
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
