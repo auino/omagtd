@@ -25,7 +25,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from . import dates, quick
+from . import dates, quick, repository
 from .db import STAMP, Store, new_id, now, today
 
 ACTION = "action"
@@ -2076,8 +2076,8 @@ VIEW_ALIASES = {
 VIEWS = tuple(sorted(VIEW_SQL)) + ("focus-ten", "log", "tags")
 
 
-def list_view(store: Store, view: str, *, limit: int | None = None, project=None,
-              area=None, tag=None, reviewed: bool | None = None) -> list[dict]:
+def list_view(store: Store, view: str, *, limit: int | None = None, offset: int = 0,
+              project=None, area=None, tag=None, reviewed: bool | None = None) -> list[dict]:
     name = str(view or "").strip().lower()
 
     if name == "log":
@@ -2175,11 +2175,27 @@ def list_view(store: Store, view: str, *, limit: int | None = None, project=None
     if extra:
         sql = sql.replace("WHERE ", "WHERE " + " AND ".join(extra) + " AND ", 1)
 
-    rows = [as_dict(r) for r in store.query("SELECT t.* " + sql, params)]
-    for item in rows:
-        item["tags"] = tags_of(store, item["id"])
-        item["parent_path"] = container_path(store, item)
-    return rows[:limit] if limit else rows
+    # The limit goes to the database, not to a slice after the fact: enriching
+    # every row of a ten-thousand-row view and then dropping all but the first
+    # page is the whole cost with none of the use. Only the page that is
+    # returned is enriched, in a batch.
+    page_sql = "SELECT t.* " + sql
+    page_params = list(params)
+    if limit:
+        page_sql += " LIMIT ?"
+        page_params.append(int(limit))
+        if offset:
+            page_sql += " OFFSET ?"
+            page_params.append(int(offset))
+    rows = [as_dict(r) for r in store.query(page_sql, page_params)]
+    if rows:
+        ids = [row["id"] for row in rows]
+        tag_map = repository.tags_for(store, ids)
+        path_map = repository.paths_for(store, ids)
+        for item in rows:
+            item["tags"] = tag_map.get(item["id"], [])
+            item["parent_path"] = path_map.get(item["id"], "")
+    return rows
 
 
 def search(store: Store, query: str, *, limit: int | None = 50) -> list[dict]:
@@ -2216,11 +2232,14 @@ def search(store: Store, query: str, *, limit: int | None = 50) -> list[dict]:
         "   WHEN 'inbox' THEN 0 WHEN 'active' THEN 1 WHEN 'waiting' THEN 2 ELSE 3 END, "
         "   t.priority DESC, COALESCE(t.due_at, '9999') ASC, "
         "   CASE WHEN t.status = 'done' THEN t.completed_at END DESC, "
-        "   t.title COLLATE NOCASE",
-        (like, like, like, like, like, like, like, like))
-    out = [as_dict(r) for r in rows][:limit] if limit else [as_dict(r) for r in rows]
-    for item in out:
-        item["tags"] = tags_of(store, item["id"])
+        "   t.title COLLATE NOCASE"
+        + (" LIMIT ?" if limit else ""),
+        (like, like, like, like, like, like, like, like) + ((int(limit),) if limit else ()))
+    out = [as_dict(r) for r in rows]
+    if out:
+        tag_map = repository.tags_for(store, [item["id"] for item in out])
+        for item in out:
+            item["tags"] = tag_map.get(item["id"], [])
     return out
 
 
@@ -2322,54 +2341,13 @@ def set_setting(store: Store, key: str, value: str) -> str:
 
 
 def stats(store: Store) -> dict:
-    """Every number the bar pill and the panel header are made of."""
+    """Every number the bar pill and the panel header are made of.
 
-    def count(view: str) -> int:
-        return int(store.scalar(f"SELECT COUNT(*) FROM {view}") or 0)
-
-    day = now()[:10]
-    month_ago = (_dt.datetime.now() - _dt.timedelta(days=30)).strftime(STAMP)
-    return {
-        "inbox": count("inbox"),
-        "clarify": count("clarify_queue"),
-        "next": count("next_actions"),
-        "ten": count("focus_ten"),
-        "today": count("today"),
-        "overdue": count("overdue"),
-        "due_today": count("due_today"),
-        "due_today_late": int(store.scalar(
-            "SELECT COUNT(*) FROM due_today WHERE substr(due_at, 1, 16) < ?", (now(),)) or 0),
-        "upcoming": count("upcoming"),
-        "waiting": count("waiting_for"),
-        "someday": count("someday"),
-        "flagged": count("flagged"),
-        "flagged_today": int(store.scalar(
-            "SELECT COUNT(*) FROM due_today WHERE priority > 0") or 0),
-        "reference": int(store.scalar(
-            "SELECT COUNT(*) FROM items WHERE status = 'reference'")),
-        "projects": int(store.scalar(
-            "SELECT COUNT(*) FROM items WHERE kind = 'project' AND status = 'active'")),
-        "projects_open": int(store.scalar(
-            "SELECT COUNT(*) FROM items WHERE kind = 'project' AND status = 'active' "
-            "AND completed = 0")),
-        "areas": int(store.scalar(
-            "SELECT COUNT(*) FROM items WHERE kind = 'area' AND status = 'active'")),
-        "stalled": count("stalled_projects"),
-        "done_today": int(store.scalar(
-            "SELECT COUNT(*) FROM items WHERE status = 'done' AND "
-            "substr(completed_at, 1, 10) = ?", (day,))),
-        # The rolling month the review quotes: what came in, and what got
-        # finished or dropped. Two numbers that only mean anything together —
-        # one without the other is either a backlog or a burn-down.
-        "created_30": int(store.scalar(
-            "SELECT COUNT(*) FROM items WHERE kind = 'action' AND created_at >= ?",
-            (month_ago,))),
-        "closed_30": int(store.scalar(
-            "SELECT COUNT(*) FROM items WHERE kind = 'action' "
-            "AND status IN ('done', 'dropped') "
-            "AND COALESCE(completed_at, dropped_at) >= ?", (month_ago,))),
-        "open_items": count("open_items"),
-    }
+    One aggregate over ``items`` under the repository layer, with the same
+    conditions the schema's views carry, so the polling bar does not reopen
+    twenty views a minute.
+    """
+    return repository.counts(store)
 
 
 def bar_snapshot(store: Store) -> dict:
@@ -2437,8 +2415,9 @@ def tree(store: Store) -> dict:
     tags = [as_dict(r) for r in store.query(
         tag_sql + " ORDER BY open_count DESC, name COLLATE NOCASE", tag_params)]
 
+    tag_map = repository.tags_for(store, [i["id"] for i in areas + projects + actions])
     for item in areas + projects + actions:
-        item["tags"] = tags_of(store, item["id"])
+        item["tags"] = tag_map.get(item["id"], [])
 
     area_by_id = {area["id"]: area for area in areas}
     project_by_id = {project["id"]: project for project in projects}
