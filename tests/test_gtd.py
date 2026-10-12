@@ -2213,6 +2213,74 @@ class CommandLine(TempStore):
         self.assertIn("no link", data["error"].lower())
         self.assertEqual(data.get("reason"), "no-link")
 
+    def test_list_pages_with_offset(self):
+        ids = [self.run_cli("capture", f"Task {n}")["item"]["id"]
+               for n in range(5)]
+        # Inbox sorts by creation time; pin it so the pages line up.
+        for n, item_id in enumerate(ids):
+            self.store.run("UPDATE items SET created_at = ? WHERE id = ?",
+                           (f"2024-01-0{n + 1} 09:00", item_id))
+
+        first = self.run_cli("list", "inbox", "--limit", "2")
+        self.assertEqual(first["count"], 2)
+        self.assertEqual(first["offset"], 0)
+        second = self.run_cli("list", "inbox", "--limit", "2", "--offset", "2")
+        third = self.run_cli("list", "inbox", "--limit", "2", "--offset", "4")
+        self.assertEqual(second["offset"], 2)
+        # The three pages partition the view, in order, with no overlap.
+        seen = [row["id"] for page in (first, second, third)
+                for row in page["items"]]
+        self.assertEqual(seen, ids)
+        self.assertEqual(third["count"], 1)
+
+    def test_search_pages_with_offset(self):
+        self.run_cli("capture", "Widget 0")
+        self.run_cli("capture", "Widget 1")
+        self.run_cli("capture", "Widget 2")
+
+        first = self.run_cli("search", "Widget", "--limit", "2")
+        second = self.run_cli("search", "Widget", "--limit", "2", "--offset", "2")
+        self.assertEqual(first["count"], 2)
+        self.assertEqual(second["count"], 1)
+        titles = [row["title"] for row in first["items"] + second["items"]]
+        self.assertEqual(titles, ["Widget 0", "Widget 1", "Widget 2"])
+
+    def test_context_list_pages_with_offset(self):
+        for name in ("alpha", "beta", "gamma"):
+            self.run_cli("capture", f"Task #{name}")
+
+        first = self.run_cli("tag", "list", "--limit", "2")
+        second = self.run_cli("tag", "list", "--limit", "2", "--offset", "2")
+        self.assertEqual([tag["name"] for tag in first["tags"]], ["alpha", "beta"])
+        self.assertEqual([tag["name"] for tag in second["tags"]], ["gamma"])
+
+    def test_state_is_one_panel_snapshot(self):
+        self.run_cli("area", "add", "Home")
+        self.run_cli("project", "add", "Move", "--area", "Home")
+        self.run_cli("capture", "Buy boxes", "--project", "Move")
+        loose = self.run_cli("capture", "Loose thing #errand")["item"]["id"]
+        # An action with no project stops being "inbox" once it is active,
+        # which is what puts it in the unnamed bucket.
+        self.store.run("UPDATE items SET status = 'active' WHERE id = ?", (loose,))
+        self.run_cli("capture", "Inbox thing")
+
+        data = self.run_cli("state")
+        self.assertIn("settings", data)
+        self.assertIn("stats", data)
+        self.assertIn("db", data)
+        self.assertEqual([a["title"] for a in data["areas"] if a["title"]], ["Home"])
+        home = next(a for a in data["areas"] if a["title"] == "Home")
+        move = next(p for p in home["projects"] if p["title"] == "Move")
+        self.assertEqual(move["action_count"], 1)
+        self.assertEqual(data["loose_count"], 1)
+        self.assertEqual([c["name"] for c in data["contexts"]], ["errand"])
+
+        paged = self.run_cli("state", "--view", "inbox", "--limit", "1")
+        self.assertEqual(paged["view"]["key"], "inbox")
+        self.assertEqual(paged["view"]["limit"], 1)
+        self.assertEqual(paged["view"]["count"], 1)
+
+
 
 class Undo(TempStore):
     def test_undo_edit_reverts_in_one_step(self):

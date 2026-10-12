@@ -2076,16 +2076,34 @@ VIEW_ALIASES = {
 VIEWS = tuple(sorted(VIEW_SQL)) + ("focus-ten", "log", "tags")
 
 
+def _page_clause(limit: int | None, offset: int) -> tuple[str, tuple]:
+    """The LIMIT/OFFSET tail for one page, with its bindings.
+
+    SQLite needs a LIMIT before it will take an OFFSET, so an offset with no
+    limit becomes the unbounded ``LIMIT -1``. An honest zero offset and no
+    limit produce nothing at all, keeping the unpaged queries unpaged.
+    """
+    offset = int(offset or 0)
+    if limit is None and not offset:
+        return "", ()
+    if limit is None:
+        return " LIMIT -1 OFFSET ?", (offset,)
+    if offset:
+        return " LIMIT ? OFFSET ?", (int(limit), offset)
+    return " LIMIT ?", (int(limit),)
+
+
 def list_view(store: Store, view: str, *, limit: int | None = None, offset: int = 0,
               project=None, area=None, tag=None, reviewed: bool | None = None) -> list[dict]:
     name = str(view or "").strip().lower()
 
     if name == "log":
+        clause, page_params = _page_clause(limit, offset)
         rows = store.query(
             "SELECT l.at, l.kind, l.detail, i.id AS item_id, i.title, i.status "
             "FROM log l LEFT JOIN items i ON i.id = l.item_id "
-            "ORDER BY l.at DESC, l.id DESC")
-        return [dict(r) for r in rows][:limit] if limit else [dict(r) for r in rows]
+            "ORDER BY l.at DESC, l.id DESC" + clause, page_params)
+        return [dict(r) for r in rows]
 
     if name == "tags":
         # Ordered by name so a context and its subcontexts sort together.
@@ -2101,8 +2119,10 @@ def list_view(store: Store, view: str, *, limit: int | None = None, offset: int 
             sql += (" AND id IN (SELECT t.id FROM tags t WHERE "
                      + filters["contexts"] + ")")
             tag_params = (cutoffs["contexts"],)
+        clause, page_params = _page_clause(limit, offset)
         return [dict(r) for r in store.query(
-            sql + " ORDER BY name COLLATE NOCASE", tag_params)]
+            sql + " ORDER BY name COLLATE NOCASE" + clause,
+            tag_params + page_params)]
 
 
     if name == "focus-ten":
@@ -2180,14 +2200,8 @@ def list_view(store: Store, view: str, *, limit: int | None = None, offset: int 
     # page is the whole cost with none of the use. Only the page that is
     # returned is enriched, in a batch.
     page_sql = "SELECT t.* " + sql
-    page_params = list(params)
-    if limit:
-        page_sql += " LIMIT ?"
-        page_params.append(int(limit))
-        if offset:
-            page_sql += " OFFSET ?"
-            page_params.append(int(offset))
-    rows = [as_dict(r) for r in store.query(page_sql, page_params)]
+    clause, page_params = _page_clause(limit, offset)
+    rows = [as_dict(r) for r in store.query(page_sql + clause, params + list(page_params))]
     if rows:
         ids = [row["id"] for row in rows]
         tag_map = repository.tags_for(store, ids)
@@ -2198,7 +2212,7 @@ def list_view(store: Store, view: str, *, limit: int | None = None, offset: int 
     return rows
 
 
-def search(store: Store, query: str, *, limit: int | None = 50) -> list[dict]:
+def search(store: Store, query: str, *, limit: int | None = 50, offset: int = 0) -> list[dict]:
     """Find everything matching a free-text query.
 
     Searches task titles and notes, the names of the projects and areas they
@@ -2216,6 +2230,7 @@ def search(store: Store, query: str, *, limit: int | None = 50) -> list[dict]:
     if not text:
         return []
     like = f"%{text}%"
+    clause, page_params = _page_clause(limit, offset)
     rows = store.query(
         "SELECT DISTINCT t.* FROM item_titles t "
         "LEFT JOIN item_tags it ON it.item_id = t.id "
@@ -2239,8 +2254,8 @@ def search(store: Store, query: str, *, limit: int | None = 50) -> list[dict]:
         "   t.priority DESC, COALESCE(t.due_at, '9999') ASC, "
         "   CASE WHEN t.status = 'done' THEN t.completed_at END DESC, "
         "   t.title COLLATE NOCASE"
-        + (" LIMIT ?" if limit else ""),
-        (like, like, like, like, like, like, like, like) + ((int(limit),) if limit else ()))
+        + clause,
+        (like, like, like, like, like, like, like, like) + page_params)
     out = [as_dict(r) for r in rows]
     if out:
         tag_map = repository.tags_for(store, [item["id"] for item in out])
@@ -2379,12 +2394,20 @@ def bar_snapshot(store: Store) -> dict:
     }
 
 
-def tree(store: Store) -> dict:
-    """Areas, the projects inside them, and each project's actions.
+def _open_action_counts(store: Store) -> dict[str, int]:
+    """How many open actions hang directly off each container."""
+    return {row["parent_id"]: row["n"] for row in store.query(
+        "SELECT parent_id, COUNT(*) AS n FROM open_items "
+        "WHERE kind = 'action' AND parent_id IS NOT NULL GROUP BY parent_id")}
 
-    The fullscreen view's left column: the shape of everything that was given
-    a destination, with the open work hanging off it. One payload, because a
-    panel that has to ask for each project's children on selection flickers.
+
+def containers(store: Store) -> dict:
+    """Areas and the projects inside them, with counts but no action rows.
+
+    The same tree as `tree` without the weight: the left column can draw every
+    area and project, and pull one container's actions only when it is opened.
+    Each project carries `action_count` (the open actions filed directly under
+    it), and the unnamed bucket is reported as `loose_count`.
     """
     areas = [as_dict(r) for r in store.query(
           "SELECT * FROM items WHERE kind = 'area' AND status = 'active' "
@@ -2406,23 +2429,10 @@ def tree(store: Store) -> dict:
         project_params = ()
     projects = [as_dict(r) for r in store.query(
         project_sql + " ORDER BY title COLLATE NOCASE", project_params)]
-    actions = [as_dict(r) for r in store.query(
-          "SELECT * FROM open_items WHERE kind = 'action' ORDER BY "
-          "COALESCE(parent_id, id) COLLATE NOCASE, priority DESC, "
-          "COALESCE(due_at, '9999') ASC, created_at ASC")]
-    tag_sql = "SELECT * FROM tag_load WHERE open_count > 0"
-    tag_filters, tag_cutoffs = prune_where(store, alias="t")
-    if tag_filters["contexts"]:
-        tag_sql += (" AND id IN (SELECT t.id FROM tags t WHERE "
-                    + tag_filters["contexts"] + ")")
-        tag_params: tuple = (tag_cutoffs["contexts"],)
-    else:
-        tag_params = ()
-    tags = [as_dict(r) for r in store.query(
-        tag_sql + " ORDER BY open_count DESC, name COLLATE NOCASE", tag_params)]
+    counts = _open_action_counts(store)
 
-    tag_map = repository.tags_for(store, [i["id"] for i in areas + projects + actions])
-    for item in areas + projects + actions:
+    tag_map = repository.tags_for(store, [i["id"] for i in areas + projects])
+    for item in areas + projects:
         item["tags"] = tag_map.get(item["id"], [])
 
     area_by_id = {area["id"]: area for area in areas}
@@ -2430,18 +2440,8 @@ def tree(store: Store) -> dict:
     for area in areas:
         area["projects"] = []
     for project in projects:
-        project["actions"] = []
         project["projects"] = []
-
-    loose: list[dict] = []
-    for action in actions:
-        parent = project_by_id.get(action.get("parent_id") or "")
-        if parent is not None:
-            parent["actions"].append(action)
-        elif action.get("status") != "inbox":
-            # Inbox tasks have no project by definition, but the project view
-            # is about assigned work, so they are not repeated here.
-            loose.append(action)
+        project["action_count"] = counts.get(project["id"], 0)
 
     # Projects nest inside projects as deep as you like; only the top of a
     # branch sits in an area (or in the unnamed bucket). Recursion happens in
@@ -2456,9 +2456,71 @@ def tree(store: Store) -> dict:
         else:
             (area_by_id.get(parent_id) or unnamed)["projects"].append(project)
 
+    # Open actions with nowhere to sit; the view fetches their rows on demand.
+    loose_count = store.scalar(
+        "SELECT COUNT(*) FROM open_items WHERE kind = 'action' "
+        "AND status != 'inbox' AND (parent_id IS NULL OR parent_id NOT IN "
+        "(SELECT id FROM items WHERE kind = 'project'))", default=0)
+
     groups = list(area_by_id.values()) + [unnamed]
     return {
         "areas": [a for a in groups if a["id"] or a["projects"] or a["tags"]],
+        "loose_count": loose_count,
+    }
+
+
+def tree(store: Store) -> dict:
+    """Areas, the projects inside them, and each project's actions.
+
+    The fullscreen view's left column: the shape of everything that was given
+    a destination, with the open work hanging off it. One payload, because a
+    panel that has to ask for each project's children on selection flickers.
+    `containers` is the same tree without the actions, for a panel that is
+    happy to ask per container instead.
+    """
+    data = containers(store)
+    project_by_id: dict[str, dict] = {}
+
+    def index(project: dict) -> None:
+        project.setdefault("actions", [])
+        project_by_id[project["id"]] = project
+        for child in project.get("projects", []):
+            index(child)
+
+    for area in data["areas"]:
+        for project in area["projects"]:
+            index(project)
+
+    actions = [as_dict(r) for r in store.query(
+          "SELECT * FROM open_items WHERE kind = 'action' ORDER BY "
+          "COALESCE(parent_id, id) COLLATE NOCASE, priority DESC, "
+          "COALESCE(due_at, '9999') ASC, created_at ASC")]
+    action_tags = repository.tags_for(store, [action["id"] for action in actions])
+    for action in actions:
+        action["tags"] = action_tags.get(action["id"], [])
+    loose: list[dict] = []
+    for action in actions:
+        parent = project_by_id.get(action.get("parent_id") or "")
+        if parent is not None:
+            parent["actions"].append(action)
+        elif action.get("status") != "inbox":
+            # Inbox tasks have no project by definition, but the project view
+            # is about assigned work, so they are not repeated here.
+            loose.append(action)
+
+    tag_sql = "SELECT * FROM tag_load WHERE open_count > 0"
+    tag_filters, tag_cutoffs = prune_where(store, alias="t")
+    if tag_filters["contexts"]:
+        tag_sql += (" AND id IN (SELECT t.id FROM tags t WHERE "
+                    + tag_filters["contexts"] + ")")
+        tag_params: tuple = (tag_cutoffs["contexts"],)
+    else:
+        tag_params = ()
+    tags = [as_dict(r) for r in store.query(
+        tag_sql + " ORDER BY open_count DESC, name COLLATE NOCASE", tag_params)]
+
+    return {
+        "areas": data["areas"],
         "loose": loose,
         "tags": tags,
         "counts": stats(store),

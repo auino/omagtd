@@ -155,10 +155,12 @@ def cmd_capture(args, out: Out, store: Store) -> dict:
 
 def cmd_list(args, out: Out, store: Store) -> dict:
     view = args.view
-    items = core.list_view(store, view, limit=args.limit, project=args.project,
-                           area=args.area, tag=args.tag)
+    offset = getattr(args, "offset", 0) or 0
+    items = core.list_view(store, view, limit=args.limit, offset=offset,
+                           project=args.project, area=args.area, tag=args.tag)
     if out.json_mode:
-        return {"ok": True, "view": view, "count": len(items), "items": items}
+        return {"ok": True, "view": view, "count": len(items),
+                "offset": offset, "items": items}
     titles = {
         "inbox": "Inbox", "clarify": "Clarify queue", "focus": "Next actions",
         "ten": "Focus Ten", "focus-ten": "Focus Ten", "today": "Today",
@@ -178,7 +180,8 @@ def cmd_list(args, out: Out, store: Store) -> dict:
             tail = out.dim(f"({subject})") if subject else ""
             out.line(f"  {out.dim(when.ljust(11))} {entry['kind'].ljust(16)} "
                      f"{(entry['detail'] or '').strip()[:58]} {tail}".rstrip())
-        return {"ok": True, "view": view, "count": len(items), "items": items}
+        return {"ok": True, "view": view, "count": len(items),
+                "offset": offset, "items": items}
 
     if view == "tags":
         # Contexts are tags, not items: they have a name and an open count.
@@ -190,21 +193,26 @@ def cmd_list(args, out: Out, store: Store) -> dict:
                 review = out.dim(f"  {tag['review']}") if tag.get("review") != "never" else ""
                 out.line(f"  #{tag['name']}  {tag['open_count']} open"
                          f"{review}  {out.dim(tag['id'])}")
-        return {"ok": True, "view": view, "count": len(items), "items": items}
+        return {"ok": True, "view": view, "count": len(items),
+                "offset": offset, "items": items}
 
     print_items(items, out, header=f"{titles.get(view, view)}  ({len(items)})",
                 empty="empty", width=args.width)
-    return {"ok": True, "view": view, "count": len(items), "items": items}
+    return {"ok": True, "view": view, "count": len(items),
+            "offset": offset, "items": items}
 
 
 def cmd_search(args, out: Out, store: Store) -> dict:
     query = " ".join(args.query)
-    items = core.search(store, query, limit=args.limit)
+    offset = getattr(args, "offset", 0) or 0
+    items = core.search(store, query, limit=args.limit, offset=offset)
     if out.json_mode:
-        return {"ok": True, "query": query, "count": len(items), "items": items}
+        return {"ok": True, "query": query, "count": len(items),
+                "offset": offset, "items": items}
     print_items(items, out, header=f'Matches for "{query}"  ({len(items)})',
                 empty="nothing matches", width=args.width)
-    return {"ok": True, "query": query, "count": len(items), "items": items}
+    return {"ok": True, "query": query, "count": len(items),
+            "offset": offset, "items": items}
 
 
 def cmd_complete(args, out: Out, store: Store) -> dict:
@@ -452,19 +460,20 @@ def cmd_project(args, out: Out, store: Store) -> dict:
         return {"ok": True, "item": node}
 
     if args.action == "list":
-        items = core.list_view(store, kind + "s", limit=args.limit)
+        offset = getattr(args, "offset", 0) or 0
+        items = core.list_view(store, kind + "s", limit=args.limit, offset=offset)
         if out.json_mode:
-            return {"ok": True, "count": len(items), "items": items}
+            return {"ok": True, "count": len(items), "offset": offset, "items": items}
         if not items:
             out.line(out.dim(f"no {kind}s yet"))
-            return {"ok": True, "count": 0, "items": []}
+            return {"ok": True, "count": 0, "offset": offset, "items": []}
         out.line(out.bold(f"{kind.title()}s ({len(items)})"))
         for item in items:
             tick = out.green("✓") if item["completed"] else " "
             review_mark = out.dim("  " + item["review"]) if item.get("review") != "never" else ""
             where = out.dim("in " + item["parent_title"]) if item.get("parent_title") else ""
             out.line(f"  {tick} {item['title']}  {out.dim(item['id'])}  {where}{review_mark}")
-        return {"ok": True, "count": len(items), "items": items}
+        return {"ok": True, "count": len(items), "offset": offset, "items": items}
 
     if args.action == "close":
         node = core.close_container(store, args.name, drop_open=not args.keep)
@@ -514,17 +523,18 @@ def cmd_tag(args, out: Out, store: Store) -> dict:
         return {"ok": True, "tag": tag}
 
     if args.action == "list":
-        tags = core.list_view(store, "tags")
+        offset = getattr(args, "offset", 0) or 0
+        tags = core.list_view(store, "tags", limit=args.limit, offset=offset)
         if out.json_mode:
-            return {"ok": True, "count": len(tags), "tags": tags}
+            return {"ok": True, "count": len(tags), "offset": offset, "tags": tags}
         if not tags:
             out.line(out.dim("no contexts yet — tag something with #name"))
-            return {"ok": True, "count": 0, "tags": tags}
+            return {"ok": True, "count": 0, "offset": offset, "tags": tags}
         out.line(out.bold(f"Contexts ({len(tags)})"))
         for tag in tags:
             out.line(f"  #{tag['name']}  {tag['open_count']} open  "
                      f"{out.dim(tag['id'])}")
-        return {"ok": True, "count": len(tags), "tags": tags}
+        return {"ok": True, "count": len(tags), "offset": offset, "tags": tags}
 
     if args.action == "rm":
         rows = store.query("SELECT id FROM tags WHERE name = ? COLLATE NOCASE",
@@ -973,6 +983,17 @@ def _export_zip(args, out: Out, store: Store) -> dict:
     return {"ok": True, "output": target, "bytes": size}
 
 
+def _db_info(store: Store, items: int | None = None) -> dict:
+    return {
+        "path": str(store.path),
+        "exists": store.path.exists(),
+        "size": store.path.stat().st_size if store.path.exists() else 0,
+        "schema": store.meta("schema"),
+        "sqlite": store.scalar("SELECT sqlite_version()"),
+        "items": core.stats(store)["open_items"] if items is None else items,
+    }
+
+
 def cmd_db(args, out: Out, store: Store) -> dict:
     if args.action == "path":
         if out.json_mode:
@@ -981,14 +1002,7 @@ def cmd_db(args, out: Out, store: Store) -> dict:
         return {"ok": True, "path": str(store.path)}
 
     if args.action == "info":
-        info = {
-            "path": str(store.path),
-            "exists": store.path.exists(),
-            "size": store.path.stat().st_size if store.path.exists() else 0,
-            "schema": store.meta("schema"),
-            "sqlite": store.scalar("SELECT sqlite_version()"),
-            "items": core.stats(store)["open_items"],
-        }
+        info = _db_info(store)
         if out.json_mode:
             return {"ok": True, **info}
         out.line(out.bold(str(info["path"])))
@@ -1038,6 +1052,62 @@ def cmd_db(args, out: Out, store: Store) -> dict:
         return cmd_init(args, out, store)
 
     raise GtdError(f"unknown db action {args.action}")
+
+
+def cmd_state(args, out: Out, store: Store) -> dict:
+    """One snapshot for the whole panel: everything that does not depend on
+    which view is selected, plus (optionally) one page of that view.
+
+    The fullscreen view redraws from this in a single process instead of
+    asking for settings, stats, contexts, the tree and the database one after
+    another. The selected list rides along when ``--view`` names it, so a
+    refresh is still one call; a later page is just another ``state`` with a
+    larger ``--offset``.
+    """
+    settings = core.settings(store)
+    counts = core.stats(store)
+    contexts = core.list_view(store, "tags")
+    tree = core.containers(store)
+    db = _db_info(store, items=counts["open_items"])
+
+    payload: dict = {
+        "ok": True,
+        "settings": settings,
+        "stats": counts,
+        "contexts": contexts,
+        "areas": tree["areas"],
+        "loose_count": tree["loose_count"],
+        "db": db,
+    }
+
+    if getattr(args, "view", None):
+        offset = getattr(args, "offset", 0) or 0
+        items = core.list_view(store, args.view, limit=args.limit, offset=offset,
+                               project=getattr(args, "project", None),
+                               area=getattr(args, "area", None),
+                               tag=getattr(args, "tag", None))
+        payload["view"] = {
+            "key": args.view,
+            "count": len(items),
+            "offset": offset,
+            "limit": args.limit,
+            "items": items,
+        }
+
+    if out.json_mode:
+        return payload
+
+    out.line(out.bold("State"))
+    out.line(f"  {counts['open_items']} open items  "
+             f"{len(contexts)} contexts  schema {db['schema']}")
+    for area in tree["areas"]:
+        if area["title"]:
+            out.line(f"  {area['title']}  {len(area['projects'])} projects")
+    view = payload.get("view")
+    if view:
+        out.line(out.bold(f"{view['key']}  ({view['count']})"))
+        print_items(view["items"], out, width=args.width)
+    return payload
 
 
 def cmd_quick(args, out: Out, store: Store) -> dict:
@@ -1160,6 +1230,7 @@ def build_parser() -> argparse.ArgumentParser:
                            + ", tags, log")
     node.add_argument("view")
     node.add_argument("--limit", type=int, help="maximum rows")
+    node.add_argument("--offset", type=int, default=0, help="rows to skip")
     node.add_argument("--project", "-P")
     node.add_argument("--area", "-A")
     node.add_argument("--tag", "-t")
@@ -1170,6 +1241,18 @@ def build_parser() -> argparse.ArgumentParser:
                            "and attachment paths.")
     node.add_argument("query", nargs="+", help="what to look for")
     node.add_argument("--limit", type=int, default=50)
+    node.add_argument("--offset", type=int, default=0, help="rows to skip")
+
+    node = add("state", cmd_state, "one snapshot for the panel",
+               description="Settings, stats, contexts, the area/project tree "
+                           "and database facts in a single call; add --view to "
+                           "ride one page of a list along.")
+    node.add_argument("--view")
+    node.add_argument("--limit", type=int, default=200)
+    node.add_argument("--offset", type=int, default=0, help="rows to skip")
+    node.add_argument("--project", "-P")
+    node.add_argument("--area", "-A")
+    node.add_argument("--tag", "-t")
 
     node = add("complete", cmd_complete, "finish a half-typed name",
                description="Complete a project, context or waiting-for name "
@@ -1300,6 +1383,7 @@ def build_parser() -> argparse.ArgumentParser:
 
         list_node = child("list", f"list {group}s")
         list_node.add_argument("--limit", type=int)
+        list_node.add_argument("--offset", type=int, default=0, help="rows to skip")
 
         close_node = child("close", f"close a {group}")
         close_node.add_argument("name")
@@ -1336,7 +1420,9 @@ def build_parser() -> argparse.ArgumentParser:
     tag_add = tag_child("add", "create a context")
     tag_add.add_argument("name")
     tag_add.add_argument("--on", help="also tag this item id")
-    tag_child("list", "list contexts with open counts")
+    tag_list = tag_child("list", "list contexts with open counts")
+    tag_list.add_argument("--limit", type=int)
+    tag_list.add_argument("--offset", type=int, default=0, help="rows to skip")
     tag_rm = tag_child("rm", "delete a context")
     tag_rm.add_argument("name")
     tag_review = tag_child("review", "set a review cadence")
