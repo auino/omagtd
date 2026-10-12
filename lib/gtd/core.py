@@ -2394,11 +2394,72 @@ def bar_snapshot(store: Store) -> dict:
     }
 
 
-def _open_action_counts(store: Store) -> dict[str, int]:
-    """How many open actions hang directly off each container."""
-    return {row["parent_id"]: row["n"] for row in store.query(
-        "SELECT parent_id, COUNT(*) AS n FROM open_items "
-        "WHERE kind = 'action' AND parent_id IS NOT NULL GROUP BY parent_id")}
+# A project is worth drawing only while open work still hangs somewhere below
+# it, however deep. Both the tree and the scoped subtree filter on this.
+_PROJECT_HAS_OPEN_WORK = (
+    "id IN (WITH RECURSIVE descendants(root_id, node_id) AS ("
+    "SELECT id, id FROM items WHERE kind = 'project' "
+    "UNION ALL SELECT d.root_id, c.id FROM descendants d "
+    "JOIN items c ON c.parent_id = d.node_id WHERE c.kind = 'project') "
+    "SELECT d.root_id FROM descendants d JOIN items a "
+    "ON a.parent_id = d.node_id WHERE a.kind = 'action' "
+    "AND a.status NOT IN ('done', 'dropped', 'trashed'))")
+
+
+def _container_counts(store: Store) -> dict[str, tuple[int, int]]:
+    """Direct open actions per container, as (total, late).
+
+    Late is the same test the view uses: a deadline that has passed while the
+    task is still open.
+    """
+    now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    counts: dict[str, tuple[int, int]] = {}
+    for row in store.query(
+        "SELECT parent_id, COUNT(*) AS total, "
+        "SUM(CASE WHEN due_at IS NOT NULL AND substr(due_at, 1, 16) < ? "
+        "THEN 1 ELSE 0 END) AS late "
+        "FROM open_items WHERE kind = 'action' AND parent_id IS NOT NULL "
+        "GROUP BY parent_id", (now,)):
+        counts[row["parent_id"]] = (row["total"], row["late"] or 0)
+    return counts
+
+
+def _nest_projects(projects: list[dict],
+                   counts: dict[str, tuple[int, int]]) -> list[dict]:
+    """Nest a flat list of projects and roll (total, late) up each branch.
+
+    Every node gains `projects`, `action_count` (the direct open actions under
+    it), and the subtree-wide `total`/`late`. Projects whose parent is not in
+    the set are returned as the tops of their branches.
+    """
+    by_id = {project["id"]: project for project in projects}
+    for project in projects:
+        project["projects"] = []
+        total, late = counts.get(project["id"], (0, 0))
+        project["action_count"] = total
+        project["_total"], project["_late"] = total, late
+
+    tops: list[dict] = []
+    for project in projects:
+        parent = by_id.get(project.get("parent_id") or "")
+        if parent is not None:
+            parent["projects"].append(project)
+        else:
+            tops.append(project)
+
+    def roll(node: dict) -> tuple[int, int]:
+        total, late = node["_total"], node["_late"]
+        for child in node["projects"]:
+            child_total, child_late = roll(child)
+            total += child_total
+            late += child_late
+        node["total"], node["late"] = total, late
+        del node["_total"], node["_late"]
+        return total, late
+
+    for top in tops:
+        roll(top)
+    return tops
 
 
 def containers(store: Store) -> dict:
@@ -2406,22 +2467,16 @@ def containers(store: Store) -> dict:
 
     The same tree as `tree` without the weight: the left column can draw every
     area and project, and pull one container's actions only when it is opened.
-    Each project carries `action_count` (the open actions filed directly under
-    it), and the unnamed bucket is reported as `loose_count`.
+    Each project carries `action_count` (its direct open actions) and the
+    subtree-wide `total`/`late`; the unnamed bucket is reported as
+    `loose_count`.
     """
     areas = [as_dict(r) for r in store.query(
           "SELECT * FROM items WHERE kind = 'area' AND status = 'active' "
           "ORDER BY title COLLATE NOCASE")]
     project_filters, project_cutoffs = prune_where(store, alias="p")
-    project_sql = "SELECT * FROM items p WHERE p.kind = 'project' AND p.status != 'done'"
-    project_sql += (" AND p.id IN (WITH RECURSIVE descendants(root_id, node_id) AS ("
-                    "SELECT id, id FROM items WHERE kind = 'project' "
-                    "UNION ALL SELECT d.root_id, c.id FROM descendants d "
-                    "JOIN items c ON c.parent_id = d.node_id "
-                    "WHERE c.kind = 'project') "
-                    "SELECT d.root_id FROM descendants d JOIN items a "
-                    "ON a.parent_id = d.node_id WHERE a.kind = 'action' "
-                    "AND a.status NOT IN ('done', 'dropped', 'trashed'))")
+    project_sql = ("SELECT * FROM items p WHERE p.kind = 'project' "
+                   "AND p.status != 'done' AND p." + _PROJECT_HAS_OPEN_WORK)
     if project_filters["projects"]:
         project_sql += " AND " + project_filters["projects"]
         project_params: tuple = (project_cutoffs["projects"],)
@@ -2429,32 +2484,31 @@ def containers(store: Store) -> dict:
         project_params = ()
     projects = [as_dict(r) for r in store.query(
         project_sql + " ORDER BY title COLLATE NOCASE", project_params)]
-    counts = _open_action_counts(store)
+    counts = _container_counts(store)
 
     tag_map = repository.tags_for(store, [i["id"] for i in areas + projects])
     for item in areas + projects:
         item["tags"] = tag_map.get(item["id"], [])
 
+    tops = _nest_projects(projects, counts)
+
     area_by_id = {area["id"]: area for area in areas}
-    project_by_id = {project["id"]: project for project in projects}
     for area in areas:
         area["projects"] = []
-    for project in projects:
-        project["projects"] = []
-        project["action_count"] = counts.get(project["id"], 0)
 
     # Projects nest inside projects as deep as you like; only the top of a
     # branch sits in an area (or in the unnamed bucket). Recursion happens in
     # the view, which walks `project["projects"]`.
     unnamed = {"id": "", "title": "", "kind": "area", "status": "active",
               "tags": [], "projects": [], "parent_id": None}
-    for project in projects:
+    for project in tops:
         parent_id = project.get("parent_id") or ""
-        holder = project_by_id.get(parent_id)
-        if holder is not None:
-            holder["projects"].append(project)
-        else:
-            (area_by_id.get(parent_id) or unnamed)["projects"].append(project)
+        (area_by_id.get(parent_id) or unnamed)["projects"].append(project)
+
+    groups = list(area_by_id.values()) + [unnamed]
+    for group in groups:
+        group["total"] = sum(p["total"] for p in group["projects"])
+        group["late"] = sum(p["late"] for p in group["projects"])
 
     # Open actions with nowhere to sit; the view fetches their rows on demand.
     loose_count = store.scalar(
@@ -2462,11 +2516,89 @@ def containers(store: Store) -> dict:
         "AND status != 'inbox' AND (parent_id IS NULL OR parent_id NOT IN "
         "(SELECT id FROM items WHERE kind = 'project'))", default=0)
 
-    groups = list(area_by_id.values()) + [unnamed]
     return {
         "areas": [a for a in groups if a["id"] or a["projects"] or a["tags"]],
         "loose_count": loose_count,
     }
+
+
+def subtree(store: Store, container_id: str) -> dict:
+    """One container's branch, with action rows, for a lazily-opened column.
+
+    The node as it sits inside `tree` — nested projects and the open actions
+    filed under each — but scoped to a single area or project, so focusing a
+    container costs only its own branch rather than every open action.
+    """
+    row = store.one("SELECT * FROM items WHERE id = ?", (container_id,))
+    if row is None or row["kind"] not in ("area", "project"):
+        raise GtdError(f"no container with id {container_id!r}")
+    node = as_dict(row)
+    counts = _container_counts(store)
+
+    if node["kind"] == "area":
+        descendants = [as_dict(r) for r in store.query(
+            "WITH RECURSIVE down(id) AS ("
+            "SELECT id FROM items WHERE parent_id = ? AND kind = 'project' "
+            "AND status != 'done' "
+            "UNION ALL SELECT c.id FROM down d JOIN items c "
+            "ON c.parent_id = d.id WHERE c.kind = 'project' "
+            "AND c.status != 'done') "
+            "SELECT * FROM items WHERE id IN (SELECT id FROM down) "
+            "AND " + _PROJECT_HAS_OPEN_WORK, (container_id,))]
+        tops = _nest_projects(descendants, counts)
+        tag_map = repository.tags_for(store, [p["id"] for p in descendants])
+        for project in descendants:
+            project["tags"] = tag_map.get(project["id"], [])
+        node["projects"] = tops
+        node["actions"] = []
+        node["total"] = sum(p["total"] for p in tops)
+        node["late"] = sum(p["late"] for p in tops)
+        return node
+
+    projects = [as_dict(r) for r in store.query(
+        "WITH RECURSIVE down(id) AS ("
+        "SELECT id FROM items WHERE id = ? "
+        "UNION ALL SELECT c.id FROM down d JOIN items c "
+        "ON c.parent_id = d.id WHERE c.kind = 'project' AND c.status != 'done') "
+        "SELECT * FROM items WHERE id IN (SELECT id FROM down) "
+        "AND kind = 'project' AND status != 'done' AND " + _PROJECT_HAS_OPEN_WORK,
+        (container_id,))]
+    tops = _nest_projects(projects, counts)
+
+    project_by_id: dict[str, dict] = {}
+
+    def index(project: dict) -> None:
+        project.setdefault("actions", [])
+        project_by_id[project["id"]] = project
+        for child in project["projects"]:
+            index(child)
+
+    for top in tops:
+        index(top)
+    me = project_by_id.get(node["id"], node)
+
+    if project_by_id:
+        marks = ",".join("?" * len(project_by_id))
+        actions = [as_dict(r) for r in store.query(
+            "SELECT * FROM open_items WHERE kind = 'action' "
+            f"AND parent_id IN ({marks}) ORDER BY priority DESC, "
+            "COALESCE(due_at, '9999') ASC, created_at ASC",
+            tuple(project_by_id))]
+    else:
+        actions = []
+    action_tags = repository.tags_for(store, [a["id"] for a in actions])
+    for action in actions:
+        action["tags"] = action_tags.get(action["id"], [])
+        parent = project_by_id.get(action.get("parent_id") or "")
+        if parent is not None:
+            parent["actions"].append(action)
+
+    tag_map = repository.tags_for(store, [p["id"] for p in projects])
+    for project in projects:
+        project["tags"] = tag_map.get(project["id"], [])
+    me["tags"] = tag_map.get(me["id"], [])
+    return me
+
 
 
 def tree(store: Store) -> dict:

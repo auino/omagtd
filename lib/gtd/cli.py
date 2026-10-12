@@ -760,6 +760,19 @@ def cmd_tree(args, out: Out, store: Store) -> dict:
     return {"ok": True}
 
 
+def cmd_subtree(args, out: Out, store: Store) -> dict:
+    node = core.subtree(store, args.id)
+    if out.json_mode:
+        return {"ok": True, "container": node}
+    out.line(out.bold(str(node["title"] or node["id"])))
+    for action in node.get("actions") or []:
+        out.line(f"    {action['title']}")
+    for project in node.get("projects") or []:
+        out.line(f"  {out.cyan(str(project['title']))}  "
+                 f"{out.dim(str(project.get('total') or 0) + ' open')}")
+    return {"ok": True, "container": node}
+
+
 def cmd_stats(args, out: Out, store: Store) -> dict:
     data = core.stats(store)
     if out.json_mode:
@@ -1455,7 +1468,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("stats", cmd_stats, "the numbers")
     add("bar", cmd_bar, "the bar widget's poll (json)")
-    add("tree", cmd_tree, "areas, projects and their actions (the fullscreen view)")
+    node = add("tree", cmd_tree, "areas, projects and their actions (the fullscreen view)")
+
+    node = add("subtree", cmd_subtree, "one area or project's branch, with its actions")
+    node.add_argument("id", help="the area or project id")
 
     node = add("settings", cmd_settings, "show or change preferences")
     node.add_argument("action", nargs="?", choices=("show", "set"), default="show")

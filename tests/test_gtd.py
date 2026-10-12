@@ -2280,6 +2280,19 @@ class CommandLine(TempStore):
         self.assertEqual(paged["view"]["limit"], 1)
         self.assertEqual(paged["view"]["count"], 1)
 
+    def test_subtree_returns_one_branch(self):
+        self.run_cli("area", "add", "Home")
+        self.run_cli("project", "add", "Move", "--area", "Home")
+        self.run_cli("capture", "Box", "--project", "Move")
+
+        home = next(a for a in self.run_cli("state")["areas"]
+                    if a["title"] == "Home")
+        move = next(p for p in home["projects"] if p["title"] == "Move")
+        node = self.run_cli("subtree", move["id"])["container"]
+        self.assertEqual(node["title"], "Move")
+        self.assertEqual([a["title"] for a in node["actions"]], ["Box"])
+
+
 
 
 class Undo(TempStore):
@@ -2317,3 +2330,55 @@ class Undo(TempStore):
         self.assertEqual(core.get(self.store, item["id"])["priority"], 1)
         core.undo(self.store, item["id"])
         self.assertEqual(core.get(self.store, item["id"])["priority"], 0)
+
+
+class Containers(TempStore):
+    """The lazy left column: counts up front, actions on demand."""
+
+    def setUp(self):
+        super().setUp()
+        core.ensure_container(self.store, "Home", kind="area")
+        core.ensure_container(self.store, "Move", kind="project")
+        core.organize(self.store, "Move", area="Home")
+        self.capture("Box A", project="Move")
+        self.capture("Box B", project="Move")
+        core.ensure_container(self.store, "Sub", kind="project")
+        core.organize(self.store, "Sub", project="Move")
+        self.capture("Sub task", project="Sub")
+        self.capture("Late one", project="Move", due="2020-01-01 09:00")
+
+    def move(self):
+        home = next(a for a in core.containers(self.store)["areas"]
+                    if a["title"] == "Home")
+        return home, next(p for p in home["projects"] if p["title"] == "Move")
+
+    def test_containers_roll_counts_up_but_carry_no_actions(self):
+        home, move = self.move()
+        self.assertEqual(home["projects"][0]["title"], "Move")
+        self.assertEqual(move["action_count"], 3)   # direct only
+        self.assertEqual(move["total"], 4)          # the subproject counts
+        self.assertEqual(move["late"], 1)
+        self.assertNotIn("actions", move)
+
+    def test_subtree_carries_actions_for_just_the_branch(self):
+        _, move = self.move()
+        node = core.subtree(self.store, move["id"])
+        self.assertEqual(sorted(a["title"] for a in node["actions"]),
+                         ["Box A", "Box B", "Late one"])
+        self.assertEqual([p["title"] for p in node["projects"]], ["Sub"])
+        self.assertEqual([a["title"] for a in node["projects"][0]["actions"]],
+                         ["Sub task"])
+        self.assertEqual(node["total"], 4)
+        self.assertEqual(node["late"], 1)
+
+    def test_subtree_of_an_area_lists_its_projects(self):
+        home, _ = self.move()
+        node = core.subtree(self.store, home["id"])
+        self.assertEqual([p["title"] for p in node["projects"]], ["Move"])
+        self.assertEqual(node["total"], 4)
+
+    def test_subtree_rejects_something_that_is_not_a_container(self):
+        item = self.capture("Just a task")
+        with self.assertRaises(GtdError):
+            core.subtree(self.store, item["id"])
+

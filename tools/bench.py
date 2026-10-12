@@ -37,6 +37,7 @@ BUDGET_MS = {
     "list tags": 40,
     "tree": 400,
     "containers": 120,
+    "subtree (project)": 40,
     "state (no view)": 150,
     "search (200)": 200,
     "calendar (month)": 120,
@@ -59,6 +60,7 @@ def run(path: str, repeat: int) -> dict[str, tuple[float, int]]:
     store = Store(path=path)
     today = _dt.date.today().replace(day=1).isoformat()[:7]
     some_id = store.scalar("SELECT id FROM items WHERE kind = 'action' LIMIT 1")
+    some_project = store.scalar("SELECT id FROM items WHERE kind = 'project' LIMIT 1")
 
     cases = {
         "bar_snapshot": lambda: [core.bar_snapshot(store)],
@@ -69,6 +71,8 @@ def run(path: str, repeat: int) -> dict[str, tuple[float, int]]:
         "list tags": lambda: core.list_view(store, "tags"),
         "tree": lambda: [core.tree(store)],
         "containers": lambda: [core.containers(store)],
+        "subtree (project)": lambda: [core.subtree(store, some_project)]
+                                       if some_project else [],
         "state (no view)": lambda: [core.settings(store), core.stats(store),
                                     core.list_view(store, "tags"),
                                     core.containers(store)],
