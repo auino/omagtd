@@ -299,16 +299,21 @@ readonly property var primaryViews: [
   // Project ids whose subtree is folded shut in the left column.
   property var collapsed: ({})
 
-  property bool treePending: false
+  property bool statePending: false
   property bool listPending: false
   property bool detailPending: false
-  property bool contextPending: false
+  property bool subtreePending: false
   property bool commandPending: false
+  // The container whose branch the in-flight `subtree` fetch is for, so a late
+  // reply for a project the cursor has already left is ignored.
+  property string subtreeWantedId: ""
+  // While the left cursor is moving, the branch to fetch once it settles.
+  property string pendingSubtreeId: ""
   // Set when capture-and-edit opens an item, so the caret lands in the first
   // editor field once that item's form has loaded.
   property bool focusEditorPending: false
-  readonly property bool busy: root.treePending || root.listPending || root.detailPending
-    || root.contextPending || root.commandPending
+  readonly property bool busy: root.statePending || root.listPending || root.detailPending
+    || root.subtreePending || root.commandPending
 
   // ---- Processes ------------------------------------------------------------
   //
@@ -322,21 +327,20 @@ readonly property var primaryViews: [
     proc.running = true
   }
 
+  // One call fills the whole panel: settings, stats, the context list, the
+  // area/project containers and the database facts. The middle column is
+  // loaded separately — a list, a calendar, or a container's subtree.
   Process {
-    id: treeProc
-    onExited: { root.treePending = false; root.maybeRefreshDetail() }
+    id: stateProc
+    onExited: { root.statePending = false; root.maybeRefreshDetail() }
     stdout: StdioCollector {
       onStreamFinished: {
         var out = String(this.text).trim()
         if (out === "") return
         try {
-          root.treeData = JSON.parse(out)
-          root.treeRows = root.flattenTree(root.treeData)
-          root.clampTree()
-          root.resyncProjectFocus()
-          root.maybeRefreshDetail()
+          root.applyState(JSON.parse(out))
         } catch (e) {
-          root.status = "could not read the tree"
+          root.status = "could not read the panel state"
         }
       }
     }
@@ -375,22 +379,28 @@ readonly property var primaryViews: [
     }
   }
 
-  // The context tree. Loaded on its own tick from `gtd list tags`, so which
-  // tree the left column is showing never delays the other one.
+  // A focused project or area is fetched one branch at a time: its nested
+  // projects and the open actions filed under each, so the middle column can
+  // group the tasks as it always did without the whole tree in memory.
   Process {
-    id: contextProc
-    onExited: root.contextPending = false
+    id: subtreeProc
+    onExited: { root.subtreePending = false; root.maybeRefreshDetail() }
     stdout: StdioCollector {
       onStreamFinished: {
         var out = String(this.text).trim()
         if (out === "") return
         try {
-          root.contextData = JSON.parse(out)
-          root.contextRows = root.flattenContexts(root.contextData)
-          root.clampContext()
-          root.resyncContextFocus()
+          var node = JSON.parse(out).container
+          if (!node) return
+          if (root.subtreeWantedId !== String(node.id)) return
+          root.projectFocus = node
+          root.rows = root.buildProjectRows(node)
+          root.rowSelected = Math.min(root.rowSelected, Math.max(0, root.rows.length - 1))
+          while (root.rowSelected < root.rows.length
+                 && root.rows[root.rowSelected].kind === "header") root.rowSelected++
+          root.syncDetailToSelection()
         } catch (e) {
-          root.status = "could not read the contexts"
+          root.status = "could not read the container"
         }
       }
     }
@@ -475,24 +485,6 @@ readonly property var primaryViews: [
   }
 
   Process {
-    id: dbProc
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var out = String(this.text).trim()
-        if (out === "") return
-        try {
-          var d = JSON.parse(out)
-          root.dbPath = d.path || ""
-          root.dbInfo = d.path ? (d.path + "   " + (d.items || 0) + " open items, "
-            + Math.round((d.size || 0) / 1024) + " KiB") : out
-        } catch (e) {
-          root.dbInfo = out
-        }
-      }
-    }
-  }
-
-  Process {
     id: completeProc
     stdout: StdioCollector {
       onStreamFinished: {
@@ -517,30 +509,6 @@ readonly property var primaryViews: [
     }
   }
 
-  Process {
-    id: settingsProc
-    stdout: StdioCollector {
-      onStreamFinished: {
-        var out = String(this.text).trim()
-        if (out === "") return
-        try {
-          var d = JSON.parse(out)
-          root.dueTime = d.due_time || "18:00"
-          root.timeFormat = d.time_format || "24h"
-          root.emptyProjectsKeepDays = d.auto_remove_empty_projects !== undefined
-             ? Number(d.auto_remove_empty_projects) : 7
-          root.emptyContextsKeepDays = d.auto_remove_empty_contexts !== undefined
-             ? Number(d.auto_remove_empty_contexts) : 7
-          root.doneRetentionDays = d.done_retention_days !== undefined
-             ? Number(d.done_retention_days) : 30
-          root.showCompleted = d.calendar_show_completed === "on"
-        } catch (e) {
-          // Settings are cosmetic; a bad read just leaves the defaults.
-        }
-      }
-    }
-  }
-
   // The pill's text lives in shell.json, not in the database, so it is written
   // with the bar CLI. A failure there is worth saying out loud, because the
   // pane would otherwise look like it simply did nothing.
@@ -559,26 +527,97 @@ readonly property var primaryViews: [
   function reload() {
     if (!root.opened) return
     root.stale = false
-    if (!root.treePending) {
-      root.treePending = true
-      exec(treeProc, [root.cli, "tree", "--json"])
+    // Everything that does not depend on the selection arrives in one call.
+    // The middle column is (re)loaded once that lands, so it reads the freshest
+    // containers.
+    if (!root.statePending) {
+      root.statePending = true
+      exec(stateProc, [root.cli, "state", "--json"])
     }
-    if (!root.contextPending) {
-      root.contextPending = true
-      exec(contextProc, [root.cli, "list", "tags", "--json"])
-    }
+  }
+
+  // Fold one `gtd state` payload into the panel, then refresh whichever column
+  // the keyboard is looking at.
+  function applyState(s) {
+    root.applySettings(s.settings || {})
+
+    root.contextData = { items: s.contexts || [] }
+    root.contextRows = root.flattenContexts(root.contextData)
+    root.clampContext()
+
+    root.treeData = { areas: s.areas || [], loose: [], tags: s.contexts || [],
+                      counts: s.stats || {} }
+    root.treeRows = root.flattenTree(root.treeData)
+    root.clampTree()
+
+    var db = s.db || {}
+    root.dbPath = db.path || ""
+    root.dbInfo = db.path ? (db.path + "   " + (db.items || 0) + " open items, "
+      + Math.round((db.size || 0) / 1024) + " KiB") : ""
+
+    root.resyncMiddle()
+    root.maybeRefreshDetail()
+  }
+
+  function applySettings(d) {
+    root.dueTime = d.due_time || "18:00"
+    root.timeFormat = d.time_format || "24h"
+    root.emptyProjectsKeepDays = d.auto_remove_empty_projects !== undefined
+      ? Number(d.auto_remove_empty_projects) : 7
+    root.emptyContextsKeepDays = d.auto_remove_empty_contexts !== undefined
+      ? Number(d.auto_remove_empty_contexts) : 7
+    root.doneRetentionDays = d.done_retention_days !== undefined
+      ? Number(d.done_retention_days) : 30
+    root.showCompleted = d.calendar_show_completed === "on"
+  }
+
+  // After the state lands, re-point the middle column at whatever is selected:
+  // a container's branch, a context's tasks, or the current nav view.
+  function resyncMiddle() {
+    if (root.projectFocused) { root.resyncProjectFocus(); return }
+    if (root.contextFocused) { root.resyncContextFocus(); return }
     root.reloadList()
-    if (!dbProc.running) exec(dbProc, [root.cli, "db", "info", "--json"])
-    if (!settingsProc.running) exec(settingsProc, [root.cli, "settings", "--json"])
+  }
+
+  function loadSubtree(id) {
+    if (!id) return
+    subtreeDebounce.stop()
+    root.subtreeWantedId = String(id)
+    root.subtreePending = true
+    exec(subtreeProc, [root.cli, "subtree", id, "--json"])
+  }
+
+  // Walking the left cursor with the arrow keys should not spawn a process per
+  // row. Wait a beat for the cursor to settle, then fetch the branch it landed
+  // on; holding the key down refreshes the wait instead of piling up calls.
+  function scheduleSubtree(id) {
+    if (!id) return
+    root.pendingSubtreeId = String(id)
+    root.subtreeWantedId = String(id)
+    subtreeDebounce.restart()
+  }
+
+  function flushSubtree() {
+    // Only a timer still waiting to fire needs flushing; an in-flight or done
+    // fetch is already the settled cursor's branch.
+    if (!subtreeDebounce.running) return
+    subtreeDebounce.stop()
+    if (root.pendingSubtreeId) root.loadSubtree(root.pendingSubtreeId)
+  }
+
+  Timer {
+    id: subtreeDebounce
+    interval: 80
+    repeat: false
+    onTriggered: if (root.pendingSubtreeId) root.loadSubtree(root.pendingSubtreeId)
   }
 
   function reloadList() {
     if (!root.opened) return
-    // A focused project builds its list from the tree payload already in
-    // hand — no `gtd list` call, so selecting in the left column is instant.
+    // A focused project or area shows its own branch, fetched one container at
+    // a time rather than held whole in memory.
     if (root.projectFocused) {
-      root.listPending = false
-      root.resyncProjectFocus()
+      root.loadSubtree(root.projectFocus.id)
       return
     }
     // A focused context has no subtree sitting in memory the way a project
@@ -753,8 +792,13 @@ readonly property var primaryViews: [
   }
 
   // Every open task under a project, and how many of them are late, so a
-  // project row can read `late/total`.
+  // project row can read `late/total`. The engine rolls the counts up when it
+  // builds the tree, so the panel does not have to walk the actions; a payload
+  // without the counts (an older reply) still falls back to the walk.
   function subtreeCounts(project) {
+    if (!project) return { total: 0, late: 0 }
+    if (project.total !== undefined)
+      return { total: Number(project.total) || 0, late: Number(project.late) || 0 }
     var total = 0
     var late = 0
     var actions = project.actions || []
@@ -847,6 +891,9 @@ readonly property var primaryViews: [
     var row = root.selectedTreeRow()
     if (!row || (row.kind !== "project" && row.kind !== "area")) {
       root.projectFocus = null
+      root.subtreeWantedId = ""
+      root.pendingSubtreeId = ""
+      subtreeDebounce.stop()
       return
     }
     // Already focused on this exact container: keep the middle selection
@@ -854,26 +901,27 @@ readonly property var primaryViews: [
     if (root.projectFocus && root.projectFocus.id === row.raw.id
         && root.projectFocus.kind === row.raw.kind)
       return
+    // Stand the container up now so its row lights and the columns agree,
+    // then pull its branch's tasks once the cursor settles.
     root.projectFocus = row.raw
-    root.rows = root.buildProjectRows(row.raw)
+    root.rows = []
     root.rowSelected = 0
-    while (root.rowSelected < root.rows.length
-           && root.rows[root.rowSelected].kind === "header") root.rowSelected++
+    root.scheduleSubtree(row.raw.id)
   }
 
-  // After the tree reloads, re-point the focus at the fresh object; if the
-  // project is gone, drop back to the nav view.
+  // After the containers reload, re-point the focus at the fresh one; if the
+  // project is gone, drop back to the nav view. The branch itself is fetched
+  // afresh, since only the containers came down with the state.
   function resyncProjectFocus() {
     if (!root.projectFocus || !root.projectFocus.id) return
     var fresh = root.findContainerById(root.treeData, root.projectFocus.id)
     if (!fresh) {
       root.projectFocus = null
+      root.subtreeWantedId = ""
+      root.pendingSubtreeId = ""
       root.reloadList()
       return
     }
-    root.projectFocus = fresh
-    root.rows = root.buildProjectRows(fresh)
-    root.clampRow()
     // Keep the left highlight on the focused row even if rows shifted.
     for (var i = 0; i < root.treeRows.length; i++) {
       if (root.treeRows[i].id === fresh.id && root.treeRows[i].kind === fresh.kind) {
@@ -881,6 +929,7 @@ readonly property var primaryViews: [
         break
       }
     }
+    root.loadSubtree(fresh.id)
   }
 
   function toggleProject(id) {
@@ -1021,6 +1070,10 @@ readonly property var primaryViews: [
     if (root.column === 0) {
       if (root.leftMode === "contexts") root.syncContextFocus()
       else root.syncProjectFocus()
+    } else if (root.leftMode === "projects" && root.projectFocused) {
+      // Leaving the tree before the settle timer fired: fetch now, so the list
+      // is there the moment the cursor enters it.
+      root.flushSubtree()
     }
     if (root.column !== 2) {
       root.settingsOpen = false
