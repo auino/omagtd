@@ -200,6 +200,14 @@ readonly property var primaryViews: [
 
   property var rows: []
   property int rowSelected: 0
+  // The query behind the middle column, without `--json` or an offset, so a
+  // later page is the same request with a bigger offset. `listOffset` is how
+  // many items the backend has handed over so far; `listMore` says the last
+  // page came back full, so another may exist.
+  property var listArgs: []
+  property int listOffset: 0
+  property int listRequestOffset: 0
+  property bool listMore: false
 
   // Which column the keyboard cursor is in: 0 left, 1 middle, 2 right.
   property int column: 1
@@ -358,20 +366,14 @@ readonly property var primaryViews: [
           if (root.contextFocused) {
             // `list tasks --tag` already returns plain items, so the generic
             // row builder is the whole of it.
-            root.rows = root.buildRows("", data)
+            root.applyListPage(root.buildRows("", data), (data.items || []).length)
           } else if (root.view.key === "calendar") {
+            root.listMore = false
             root.loadCalendar(data)
           } else {
-            root.rows = root.buildRows(root.view.key, data)
+            root.applyListPage(root.buildRows(root.view.key, data),
+                               (data.items || []).length)
           }
-          root.rowSelected = Math.min(root.rowSelected, Math.max(0, root.rows.length - 1))
-          // A grouped list can land the cursor on a heading; the right column
-          // and Enter only act on rows, so step forward to the first real one.
-          while (root.rowSelected < root.rows.length
-                 && root.rows[root.rowSelected].kind === "header") root.rowSelected++
-          // The selection is live even before the code loads: show its editor
-          // straight away instead of an empty pane.
-          root.syncDetailToSelection()
         } catch (e) {
           root.status = "could not read the list"
         }
@@ -617,6 +619,7 @@ readonly property var primaryViews: [
     // A focused project or area shows its own branch, fetched one container at
     // a time rather than held whole in memory.
     if (root.projectFocused) {
+      root.listMore = false
       root.loadSubtree(root.projectFocus.id)
       return
     }
@@ -624,28 +627,86 @@ readonly property var primaryViews: [
     // does, so ask for its tasks outright. `tasks` is every open action, so a
     // context reads the same however the work happens to be filed.
     if (root.contextFocused) {
-      root.listPending = true
-      exec(listProc, [root.cli, "list", "tasks", "--tag",
-                      root.contextFocus.name, "--limit", "200", "--json"])
+      root.beginList(["list", "tasks", "--tag",
+                      root.contextFocus.name, "--limit", "200"])
       return
     }
-    // Restarting the process, rather than skipping while one runs, means a
-    // view switch during a load can never apply the old view's data. Read the
-    // view straight from the index: `root.view` may still hold the previous
-    // value when this runs from onViewIndexChanged.
-    root.listPending = true
+    // Restarting the process, rather than skipping while it runs, means a view
+    // switch during a load can never apply the old view's data. Read the view
+    // straight from the index: `root.view` may still hold the previous value
+    // when this runs from onViewIndexChanged.
     var v = root.views[Math.max(0, Math.min(root.viewIndex, root.views.length - 1))]
     if (v && v.key === "calendar") {
+      root.listArgs = []
+      root.listOffset = 0
+      root.listMore = false
+      root.listPending = true
       exec(listProc, [root.cli, "calendar", "--month", root.calendarMonth, "--all", "--json"])
       return
     }
     if (v && v.key === "search") {
       var q = root.searchQuery.trim()
-      if (q === "") { root.rows = []; root.rowSelected = 0; root.listPending = false; return }
-      exec(listProc, [root.cli, "search", q, "--limit", "200", "--json"])
+      if (q === "") {
+        root.rows = []; root.rowSelected = 0; root.listPending = false
+        root.listArgs = []; root.listMore = false
+        return
+      }
+      root.beginList(["search", q, "--limit", "200"])
       return
     }
-    exec(listProc, [root.cli].concat(v ? v.args : []).concat(["--json"]))
+    root.beginList((v ? v.args : []).slice())
+  }
+
+  // Start a paged list: remember the query, then ask for the first page. A
+  // later page is the same request with a bigger offset.
+  function beginList(args) {
+    root.listArgs = args
+    root.listOffset = 0
+    root.listMore = false
+    root.listPending = true
+    root.loadListPage(0)
+  }
+
+  // The page size a query asked for, or 0 when it is not paged at all. Only a
+  // query with an explicit limit is worth paging; the rest are small.
+  function argsLimit(args) {
+    var at = args ? args.indexOf("--limit") : -1
+    return at >= 0 ? Number(args[at + 1]) || 0 : 0
+  }
+
+  function loadListPage(offset) {
+    var args = root.listArgs.slice()
+    if (offset > 0) args = args.concat(["--offset", String(offset)])
+    root.listRequestOffset = offset
+    exec(listProc, [root.cli].concat(args).concat(["--json"]))
+  }
+
+  // The cursor is nearing the end of what is loaded and the last page was full:
+  // fetch the next one and append it, so scrolling keeps flowing.
+  function maybeLoadMore() {
+    if (root.projectFocused || root.listPending || !root.listMore) return
+    if (root.rowSelected >= root.rows.length - 3) {
+      root.listPending = true
+      root.loadListPage(root.listOffset)
+    }
+  }
+
+  // Fold one page of a list into the middle column. A first page replaces the
+  // rows; a later page appends, so scrolling keeps its place.
+  function applyListPage(pageRows, count) {
+    var append = root.listRequestOffset > 0
+    root.rows = append ? root.rows.concat(pageRows) : pageRows
+    var limit = root.argsLimit(root.listArgs)
+    root.listOffset = root.listRequestOffset + count
+    root.listMore = limit > 0 && count >= limit
+    root.rowSelected = Math.min(root.rowSelected, Math.max(0, root.rows.length - 1))
+    // A grouped list can land the cursor on a heading; the right column and
+    // Enter only act on rows, so step forward to the first real one.
+    while (root.rowSelected < root.rows.length
+           && root.rows[root.rowSelected].kind === "header") root.rowSelected++
+    // The selection is live even before the code loads: show its editor
+    // straight away instead of an empty pane.
+    root.syncDetailToSelection()
   }
 
   function reloadDetail(forceId) {
@@ -1101,7 +1162,11 @@ readonly property var primaryViews: [
     root.syncContextFocus()
     root.reloadDetail()
   }
-  onRowSelectedChanged: if (root.column === 1) { root.settingsOpen = false; root.reloadDetail() }
+  onRowSelectedChanged: if (root.column === 1) {
+    root.settingsOpen = false
+    root.reloadDetail()
+    root.maybeLoadMore()
+  }
   onViewIndexChanged: {
     root.rowSelected = 0
     root.settingsOpen = false
