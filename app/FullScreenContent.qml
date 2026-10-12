@@ -2223,7 +2223,30 @@ readonly property var primaryViews: [
     var next = current < 0 ? (delta > 0 ? 0 : n - 1)
                            : Math.max(0, Math.min(n - 1, current + delta))
     var target = fields[next]
-    if (target) target.forceActiveFocus()
+    if (!target) return
+    target.forceActiveFocus()
+    revealEditorField(target)
+  }
+
+  // Keep the field the Up/Down cursor just landed on on screen: scroll the
+  // editor so the whole field sits within the viewport, with a little margin at
+  // either edge. Field heights can change (the notes box grows as it is
+  // written), so this runs after the layout has settled.
+  function revealEditorField(item) {
+    if (!item) return
+    Qt.callLater(function() {
+      if (!item.parent) return
+      var y = item.mapToItem(detailColumn, 0, 0).y
+      var margin = Style.spacing.md
+      var top = detailFlick.contentY
+      var bottom = top + detailFlick.height
+      if (y - margin < top) {
+        detailFlick.contentY = Math.max(0, y - margin)
+      } else if (y + item.height + margin > bottom) {
+        var maxY = Math.max(0, detailFlick.contentHeight - detailFlick.height)
+        detailFlick.contentY = Math.min(maxY, y + item.height + margin - detailFlick.height)
+      }
+    })
   }
 
   function switchColumn(delta) {
@@ -4754,17 +4777,39 @@ Row {
                      font.pixelSize: Style.font.caption
                             }
 
-                   TextField {
+                   // Free text, so it wraps and grows with what is written. It
+                   // starts at a couple of lines so an empty one still reads as
+                   // a place to write; Up and Down still leave for another field.
+                   TextArea {
                      id: notesField
                      width: parent.width
-                     height: Style.space(64)
-                     foreground: root.textColor
+                     height: Math.max(Style.space(64), implicitHeight)
+                     wrapMode: TextArea.Wrap
+                     textFormat: TextArea.PlainText
+                     color: root.textColor
+                     font.family: root.fontFamily
+                     font.pixelSize: Style.font.body
                      placeholderText: "notes"
-text: root.editNotes
-                      onTextEdited: { root.editNotes = text; root.formDirty = true }
-                      Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
-                      Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
+                     placeholderTextColor: Qt.darker(root.textColor, 1.6)
+                     selectionColor: Style.selectionFillFor(root.textColor, root.accent)
+                     selectedTextColor: root.textColor
+                     readonly property var _spec: Border.controlSpec(
+                       activeFocus ? "focus" : (hovered ? "hover-cursor" : "normal"),
+                       root.textColor, root.accent)
+                     leftPadding: Style.spacing.controlPaddingX + Border.left(_spec)
+                     rightPadding: Style.spacing.controlPaddingX + Border.right(_spec)
+                     topPadding: Style.spacing.inputPaddingY + Border.top(_spec)
+                     bottomPadding: Style.spacing.inputPaddingY + Border.bottom(_spec)
+                     text: root.editNotes
+                     onTextEdited: { root.editNotes = text; root.formDirty = true }
+                     Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                     Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
+                     background: BorderSurface {
+                       color: Style.controlFill(notesField.activeFocus, notesField.hovered, root.textColor, root.accent)
+                       borderSpec: notesField._spec
+                       radius: Style.cornerRadius
                      }
+                   }
 
                   Text {
                     width: parent.width
