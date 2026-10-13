@@ -1060,6 +1060,39 @@ Repetition: every 2 months
             "SELECT parent_title FROM item_titles WHERE title = 'Do a thing'")["parent_title"],
             "Q4 audit")
 
+    BARE = """<omnifocus>
+  <folder id="f1"><name>Work</name></folder>
+  <task id="p1"><project><folder idref="f1"/></project><name>Q4 audit</name></task>
+  <task id="t1"><task idref="p1"/><name>Do a thing</name></task>
+</omnifocus>"""
+
+    def test_reads_a_folder_holding_a_bare_contents_xml(self):
+        folder = os.path.join(self.home, "Picked")
+        os.makedirs(folder)
+        with open(os.path.join(folder, "contents.xml"), "w") as handle:
+            handle.write(self.BARE)
+        target = Store(path=os.path.join(self.home, "bare.sqlite3"))
+        self.addCleanup(target.close)
+        result = importer.import_file(target, folder, tag="")
+        self.assertEqual(result["format"], "ofocus")
+        self.assertEqual(target.one(
+            "SELECT parent_title FROM item_titles WHERE title = 'Do a thing'")["parent_title"],
+            "Q4 audit")
+
+    def test_finds_an_ofocus_document_inside_the_chosen_folder(self):
+        outer = os.path.join(self.home, "Unzipped")
+        inner = os.path.join(outer, "OmniFocus.ofocus")
+        os.makedirs(inner)
+        with zipfile.ZipFile(os.path.join(inner, "00000000000000=a+b.zip"), "w") as archive:
+            archive.writestr("contents.xml", self.BARE)
+        target = Store(path=os.path.join(self.home, "nested.sqlite3"))
+        self.addCleanup(target.close)
+        result = importer.import_file(target, outer, tag="")
+        self.assertEqual(result["format"], "ofocus")
+        self.assertEqual(target.one(
+            "SELECT parent_title FROM item_titles WHERE title = 'Do a thing'")["parent_title"],
+            "Q4 audit")
+
     def test_junk_is_skipped_not_fatal(self):
         target = Store(path=os.path.join(self.home, "junk.sqlite3"))
         self.addCleanup(target.close)

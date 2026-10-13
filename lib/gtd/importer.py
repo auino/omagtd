@@ -948,9 +948,16 @@ def _sniff(path: Path) -> str:
     if path.is_dir():
         if any(path.glob("*.ofocusmx")):
             return "ofocusmx"
-        # An OmniFocus document is a package of zipped transaction files; a
-        # plain folder of plists is the older backup shape.
+        # An OmniFocus document is a folder — of zipped transaction files, a
+        # lone contents.xml, or one `.ofocus` document inside. A plain folder
+        # of plists is the older backup shape.
         if any(path.glob("*.zip")) or path.suffix.lower() == ".ofocus":
+            return "ofocus"
+        if (path / "contents.xml").is_file():
+            return "ofocus"
+        documents = [p for p in path.iterdir()
+                     if p.is_dir() and p.name.lower().endswith(".ofocus")]
+        if len(documents) == 1:
             return "ofocus"
         return "ofxml"
 
@@ -1060,7 +1067,7 @@ def _contents_members(archive: zipfile.ZipFile) -> list[str]:
 
 
 def _read_ofocus_xml(path: Path) -> list[str]:
-    """Every `contents.xml` in a `.ofocus` package, master file first."""
+    """Every `contents.xml` in a `.ofocus` folder, master file first."""
     texts: list[str] = []
     if path.is_dir():
         archives = sorted(path.glob("*.zip"),
@@ -1072,6 +1079,17 @@ def _read_ofocus_xml(path: Path) -> list[str]:
                     texts.extend(_contents_members(archive))
             except zipfile.BadZipFile:
                 continue
+        if texts:
+            return texts
+        # Not zipped: either a lone contents.xml, or one `.ofocus` document
+        # sitting inside the folder the user picked.
+        bare = path / "contents.xml"
+        if bare.is_file():
+            return [bare.read_text(encoding="utf-8", errors="replace")]
+        nested = sorted(p for p in path.iterdir()
+                        if p.is_dir() and p.name.lower().endswith(".ofocus"))
+        if len(nested) == 1:
+            return _read_ofocus_xml(nested[0])
         return texts
 
     # A `.ofocus` handed over as one archive: read the xml it holds, or the

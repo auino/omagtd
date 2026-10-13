@@ -2105,6 +2105,13 @@ readonly property var primaryViews: [
                       : "keeping completed " + n + " days")
     }
 
+  // A file:// URL from a picker -> a plain local path the CLI understands.
+  function localPath(url) {
+    var path = url.toString()
+    if (path.indexOf("file://") === 0) path = path.slice(7)
+    try { return decodeURIComponent(path) } catch (e) { return path }
+  }
+
   function doImport() {
     var path = root.importPath.trim()
     if (path === "") { root.status = "give a file to import"; return }
@@ -2456,12 +2463,21 @@ readonly property var primaryViews: [
     id: importDialog
     title: "Import from OmniFocus"
     fileMode: FileDialog.OpenFile
-    nameFilters: ["OmniFocus (*.ofxml *.ofocusmx *.json)", "All files (*)"]
+    nameFilters: ["OmniFocus (*.ofxml *.ofocusmx *.json *.csv)", "All files (*)"]
     onAccepted: {
-      var path = selectedFile.toString()
-      if (path.indexOf("file://") === 0) path = path.slice(7)
-      try { path = decodeURIComponent(path) } catch (e) {}
+      var path = root.localPath(selectedFile)
       root.importPath = path
+      root.doImport()
+    }
+  }
+
+  // An OmniFocus export is a folder (a .ofocus document), so offer a folder
+  // picker alongside the file browser above.
+  FolderDialog {
+    id: importFolderDialog
+    title: "Choose an OmniFocus export folder"
+    onAccepted: {
+      root.importPath = root.localPath(selectedFolder)
       root.doImport()
     }
   }
@@ -4027,7 +4043,7 @@ readonly property var primaryViews: [
                 id: importField
                 width: parent.width
                 foreground: root.textColor
-                placeholderText: "OmniFocus export: .ofocus, .ofxml, .ofocusmx, or .json"
+                placeholderText: "OmniFocus export folder (.ofocus), or .ofxml / .ofocusmx / .json / .csv"
                 text: root.importPath
                 onTextEdited: root.importPath = text
                 onAccepted: root.doImport()
@@ -4054,6 +4070,16 @@ readonly property var primaryViews: [
                   foreground: root.textColor
                   enabled: !root.busy
                   onClicked: importDialog.open()
+                }
+
+                Button {
+                  text: "folder"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: importFolderDialog.open()
                 }
 
                 Button {
