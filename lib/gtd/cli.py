@@ -1533,8 +1533,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     node = add("import", cmd_import, "import from OmniFocus, CSV, JSON or a zip export")
     node.add_argument("source")
-    node.add_argument("--format", choices=("auto", "omnifocus", "ofxml", "ofocusmx",
-                                           "csv", "json", "zip"), default="auto")
+    node.add_argument("--format", choices=("auto", "omnifocus", "ofxml", "ofocus",
+                                           "ofocusmx", "csv", "json", "zip"),
+                      default="auto")
     node.add_argument("--tag", "-t",
                       help="add a context to every imported task "
                            "(default: omnifocus_import_<yyyymmdd> for OmniFocus "

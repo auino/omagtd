@@ -2108,7 +2108,7 @@ readonly property var primaryViews: [
   function doImport() {
     var path = root.importPath.trim()
     if (path === "") { root.status = "give a file to import"; return }
-    var args = ["import", path, "--format", "omnifocus",
+    var args = ["import", path, "--format", "auto",
                 "--tag", root.importTag.trim()]
     if (root.importDryRun) args = args.concat(["--dry-run"])
     root.run(args, root.importDryRun ? "dry run" : "imported")
@@ -4027,7 +4027,7 @@ readonly property var primaryViews: [
                 id: importField
                 width: parent.width
                 foreground: root.textColor
-                placeholderText: "OmniFocus export: .ofxml, .ofocusmx, or .json"
+                placeholderText: "OmniFocus export: .ofocus, .ofxml, .ofocusmx, or .json"
                 text: root.importPath
                 onTextEdited: root.importPath = text
                 onAccepted: root.doImport()

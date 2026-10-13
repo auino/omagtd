@@ -5,6 +5,10 @@ In, in decreasing order of fidelity:
 ``ofxml``      an OmniFocus backup / export (a plist). Folders, projects,
                areas, contexts, notes, flags, defer and due dates,
                waiting-for, completion, repetition and review dates survive.
+``ofocus``     an OmniFocus document — in practice a folder of zipped
+               transaction files, each holding a ``contents.xml``. The
+               database itself: folders, projects, contexts (with their
+               nesting), tasks, notes, flags and dates.
 ``ofocusmx``   OmniFocus's line-oriented text export. Same ideas, less
                structure — parsed leniently, so unknown keys are ignored
                rather than fatal.
@@ -29,6 +33,7 @@ import re
 import shutil
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
@@ -283,7 +288,7 @@ def _blank_result(source: str) -> dict:
 
 # The import formats whose contexts are worth stamping with a dated "this batch
 # came from OmniFocus" tag, so an import can be found and reviewed as a group.
-OMNIFOCUS_FORMATS = ("omnifocus", "ofxml", "ofocusmx")
+OMNIFOCUS_FORMATS = ("omnifocus", "ofxml", "ofocus", "ofocusmx")
 
 
 def default_import_tag(day: _dt.date | None = None) -> str:
@@ -907,7 +912,9 @@ def import_file(store, source: str, *, fmt: str = "auto", dry_run: bool = False,
         # rehearsal: the same code paths run and then the writes are undone.
         store.run("BEGIN")
     try:
-        if kind in ("omnifocus", "ofxml", "ofocusmx"):
+        if kind == "ofocus":
+            result = _import_ofocus(store, path, note, extra_tag=extra_tag)
+        elif kind in ("omnifocus", "ofxml", "ofocusmx"):
             result = _import_omnifocus_path(store, path, kind, note,
                                             extra_tag=extra_tag)
         elif kind == "csv":
@@ -939,7 +946,13 @@ def import_file(store, source: str, *, fmt: str = "auto", dry_run: bool = False,
 
 def _sniff(path: Path) -> str:
     if path.is_dir():
-        return "ofocusmx" if any(path.glob("*.ofocusmx")) else "ofxml"
+        if any(path.glob("*.ofocusmx")):
+            return "ofocusmx"
+        # An OmniFocus document is a package of zipped transaction files; a
+        # plain folder of plists is the older backup shape.
+        if any(path.glob("*.zip")) or path.suffix.lower() == ".ofocus":
+            return "ofocus"
+        return "ofxml"
 
     suffix = path.suffix.lower()
     if suffix == ".csv":
@@ -948,6 +961,8 @@ def _sniff(path: Path) -> str:
         return "json"
     if suffix == ".zip":
         return "zip"
+    if suffix == ".ofocus":
+        return "ofocus"
     if suffix == ".ofocusmx":
         return "ofocusmx"
     if suffix in (".plist", ".ofocusbackup") or "backup" in path.name.lower():
@@ -969,6 +984,289 @@ def _sniff(path: Path) -> str:
     if lines and "," in lines[0]:
         return "csv"
     return "ofxml"
+
+
+# ------------------------------------------------------------ .ofocus
+#
+# An OmniFocus document is a package: a folder of zipped transaction files,
+# each carrying a `contents.xml`. The master file — its name starts with
+# `00000000000000=` — holds the whole database; the stamped files after it are
+# edits applied over it. Read them in order and the last word on each element
+# wins.
+
+
+def _local_name(tag: str) -> str:
+    """An element's name, with any XML namespace stripped."""
+    return tag.rsplit("}", 1)[-1]
+
+
+def _child(node, name):
+    for child in node:
+        if _local_name(child.tag) == name:
+            return child
+    return None
+
+
+def _child_text(node, name) -> str:
+    child = _child(node, name)
+    return (child.text or "").strip() if child is not None and child.text else ""
+
+
+def _ofocus_date(text: str) -> str | None:
+    """An OmniFocus ISO-8601 stamp as our own ``YYYY-MM-DD HH:MM``.
+
+    OmniFocus writes UTC with a `Z` and milliseconds; the rest of the code
+    keeps naive local stamps, so the offset is dropped rather than shifted,
+    exactly as the `.ofocusmx` reader does.
+    """
+    text = (text or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = _dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M")
+
+
+def _ofocus_review(text: str) -> str:
+    """Map an OmniFocus review interval (`@1w`, `@2m`) onto our cadence."""
+    match = re.match(r"@?\s*(\d*)\s*([dwmy])", (text or "").strip().lower())
+    if not match:
+        return "never"
+    count = int(match.group(1) or 1)
+    unit = match.group(2)
+    if unit == "d":
+        return "daily"
+    if unit == "w":
+        return "weekly"
+    if unit == "m":
+        return "quarterly" if count >= 3 else "monthly"
+    return "yearly" if unit == "y" else "never"
+
+
+def _ofocus_note(node) -> str:
+    note = _child(node, "note")
+    if note is None:
+        return ""
+    text = _child(note, "text")
+    return "".join((text if text is not None else note).itertext()).strip()
+
+
+def _contents_members(archive: zipfile.ZipFile) -> list[str]:
+    return [archive.read(name).decode("utf-8", "replace")
+            for name in archive.namelist()
+            if name.lower().endswith("contents.xml")]
+
+
+def _read_ofocus_xml(path: Path) -> list[str]:
+    """Every `contents.xml` in a `.ofocus` package, master file first."""
+    texts: list[str] = []
+    if path.is_dir():
+        archives = sorted(path.glob("*.zip"),
+                          key=lambda p: (not p.name.startswith("00000000000000="),
+                                         p.name))
+        for archive_path in archives:
+            try:
+                with zipfile.ZipFile(archive_path) as archive:
+                    texts.extend(_contents_members(archive))
+            except zipfile.BadZipFile:
+                continue
+        return texts
+
+    # A `.ofocus` handed over as one archive: read the xml it holds, or the
+    # nested transaction zips inside it.
+    with zipfile.ZipFile(path) as archive:
+        texts.extend(_contents_members(archive))
+        if texts:
+            return texts
+        for member in archive.namelist():
+            if member.lower().endswith(".zip"):
+                with zipfile.ZipFile(io.BytesIO(archive.read(member))) as inner:
+                    texts.extend(_contents_members(inner))
+    return texts
+
+
+def _ofocus_records(xml_texts) -> list[dict]:
+    """Fold the transaction files into the record shape the OmniFocus
+    importer already understands."""
+    elements: dict[str, ET.Element] = {}
+    order: list[str] = []
+    joins: list[tuple[str, str]] = []
+    seen_joins: set = set()
+
+    for text in xml_texts:
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError:
+            continue
+        for node in list(root):
+            name = _local_name(node.tag)
+            if name == "task-to-tag":
+                task = _child(node, "task")
+                context = _child(node, "context")
+                first = (task.get("idref") or "") if task is not None else ""
+                second = (context.get("idref") or "") if context is not None else ""
+                if first and second and (first, second) not in seen_joins:
+                    seen_joins.add((first, second))
+                    joins.append((first, second))
+                continue
+            node_id = node.get("id")
+            if not node_id:
+                continue
+            op = (node.get("op") or "").lower()
+            if op == "reference":
+                continue  # a copy of what an earlier file already gave us
+            if op == "delete":
+                elements.pop(node_id, None)
+                continue
+            if node_id not in elements:
+                order.append(node_id)
+            elements[node_id] = node
+
+    order = [i for i in order if i in elements]  # a later file may have deleted some
+
+    def kind_of(node_id: str) -> str:
+        return _local_name(elements[node_id].tag)
+
+    contexts = {i: elements[i] for i in order if kind_of(i) == "context"}
+    folders = {i: elements[i] for i in order if kind_of(i) == "folder"}
+    tasks = {i: elements[i] for i in order if kind_of(i) == "task"}
+
+    path_cache: dict[str, str | None] = {}
+
+    def context_path(context_id: str, depth: int = 0) -> str | None:
+        if context_id in path_cache:
+            return path_cache[context_id]
+        node = contexts.get(context_id)
+        if node is None:
+            return None
+        name = _child_text(node, "name")
+        parent = _child(node, "context")
+        parent_path = None
+        if parent is not None and parent.get("idref") and depth < 64:
+            parent_path = context_path(parent.get("idref"), depth + 1)
+        full = f"{parent_path}>{name}" if parent_path and name else (name or parent_path)
+        path_cache[context_id] = full
+        return full
+
+    def folder_name(folder_id: str) -> str | None:
+        node = folders.get(folder_id)
+        return _child_text(node, "name") if node is not None else None
+
+    # A task is a project exactly when its `<project>` child has content: the
+    # file always emits the optional children, so an action carries an empty
+    # `<project/>` and a project carries folder / status / review-interval.
+    def is_project(node_id: str) -> bool:
+        project_node = _child(tasks[node_id], "project")
+        return project_node is not None and len(project_node) > 0
+
+    project_cache: dict[str, str | None] = {}
+
+    def project_of(task_id: str | None, depth: int = 0) -> str | None:
+        if not task_id or depth > 64:
+            return None
+        if task_id in project_cache:
+            return project_cache[task_id]
+        result = None
+        if task_id in tasks:
+            if is_project(task_id):
+                result = task_id
+            else:
+                parent = _child(tasks[task_id], "task")
+                result = project_of(
+                    parent.get("idref") if parent is not None else None, depth + 1)
+        project_cache[task_id] = result
+        return result
+
+    records: list[dict] = []
+
+    for node_id in order:
+        if kind_of(node_id) == "context":
+            path = context_path(node_id)
+            if path:
+                records.append({"Title": path, "Type": "context"})
+
+    for node_id in order:
+        if kind_of(node_id) != "folder":
+            continue
+        title = _child_text(elements[node_id], "name")
+        if title:
+            records.append({"Title": title, "Type": "area"})
+
+    for node_id in order:
+        node = elements[node_id]
+        if kind_of(node_id) != "task":
+            continue
+        title = _child_text(node, "name")
+        if not title:
+            continue
+        project_node = _child(node, "project")
+        if project_node is not None and len(project_node) > 0:
+            entry = {"Title": title, "Type": "project"}
+            folder = _child(project_node, "folder")
+            if folder is not None and folder.get("idref"):
+                name = folder_name(folder.get("idref"))
+                if name:
+                    entry["Parents"] = [{"Title": name, "Type": "Area"}]
+            review = _ofocus_review(_child_text(project_node, "review-interval"))
+            if review != "never":
+                entry["ReviewInterval"] = review
+            reviewed = _ofocus_date(_child_text(project_node, "last-review"))
+            if reviewed:
+                entry["ReviewDate"] = reviewed
+            completed = _ofocus_date(_child_text(node, "completed"))
+            if (_child_text(project_node, "status").lower() in ("done", "dropped")
+                    or completed):
+                entry["CompletedDate"] = (
+                    completed
+                    or _ofocus_date(_child_text(node, "modified"))
+                    or _ofocus_date(_child_text(node, "added")))
+            records.append(entry)
+            continue
+
+        entry = {"Title": title, "Type": "action"}
+        parent = _child(node, "task")
+        project_id = project_of(parent.get("idref") if parent is not None else None)
+        if project_id:
+            project_name = _child_text(tasks[project_id], "name")
+            if project_name:
+                entry["Parents"] = [{"Title": project_name, "Type": "Project"}]
+
+        context_ids: list[str] = []
+        direct = _child(node, "context")
+        if direct is not None and direct.get("idref"):
+            context_ids.append(direct.get("idref"))
+        context_ids.extend(cid for tid, cid in joins if tid == node_id)
+        tags = [context_path(cid) for cid in context_ids]
+        tags = [t for t in dict.fromkeys(tags) if t]
+        if tags:
+            entry["Tags"] = tags
+
+        if _child_text(node, "inbox").lower() in ("true", "1", "yes"):
+            entry["LocationInFolder"] = "Inbox"
+        if _child_text(node, "flagged").lower() in ("true", "1", "yes"):
+            entry["Flagged"] = True
+        note = _ofocus_note(node)
+        if note:
+            entry["Note"] = note
+        for key, xml_name in (("DeferredDate", "start"), ("DueDate", "due"),
+                              ("CompletedDate", "completed"), ("DroppedDate", "dropped")):
+            stamp = _ofocus_date(_child_text(node, xml_name))
+            if stamp:
+                entry[key] = stamp
+        records.append(entry)
+
+    return records
+
+
+def _import_ofocus(store, path: Path, note, extra_tag: str = "") -> dict:
+    texts = _read_ofocus_xml(path)
+    if not texts:
+        raise GtdError(f"{path.name} holds no OmniFocus contents.xml")
+    note(f"read {len(texts)} transaction file(s)")
+    return import_omnifocus(store, _ofocus_records(texts),
+                            source=str(path), extra_tag=extra_tag)
 
 
 def _import_omnifocus_path(store, path: Path, kind: str, note,

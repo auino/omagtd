@@ -18,6 +18,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 
@@ -938,6 +939,126 @@ Repetition: every 2 months
         someday = target.one("SELECT * FROM items WHERE title = 'Read the manual'")
         self.assertEqual(someday["status"], "someday")
         self.assertIn('"interval": 2', someday["repeat"])
+
+        someday = target.one("SELECT * FROM items WHERE title = 'Read the manual'")
+        self.assertEqual(someday["status"], "someday")
+        self.assertIn('"interval": 2', someday["repeat"])
+
+    def ofocus_package(self, name, *xml_texts):
+        folder = os.path.join(self.home, name)
+        os.makedirs(folder, exist_ok=True)
+        for index, text in enumerate(xml_texts):
+            stamp = "00000000000000" if index == 0 else "%014d" % index
+            with zipfile.ZipFile(os.path.join(folder, f"{stamp}=a+b.zip"), "w") as archive:
+                archive.writestr("contents.xml", text)
+        return folder
+
+    def test_reads_an_ofocus_package(self):
+        # Shaped like a real OmniFocus 3 file: a namespace on the root, and the
+        # optional children always emitted (an action still carries `<project/>`,
+        # a task outside the inbox still carries `<inbox>false</inbox>`).
+        xml = """<omnifocus xmlns="http://www.omnigroup.com/namespace/OmniFocus/v2">
+  <folder id="f1"><name>Work</name></folder>
+  <context id="c1"><name>Home</name><rank>0</rank></context>
+  <context id="c2"><context idref="c1"/><name>Kitchen</name><rank>0</rank></context>
+  <task id="p1">
+    <project>
+      <folder idref="f1"/>
+      <singleton>false</singleton>
+      <last-review>2026-10-01T09:00:00.000Z</last-review>
+      <review-interval>@1w</review-interval>
+      <status>active</status>
+    </project>
+    <inbox>false</inbox>
+    <task/>
+    <name>Q4 audit</name>
+    <completed/>
+    <flagged>false</flagged>
+  </task>
+  <task id="t1">
+    <project/>
+    <task idref="p1"/>
+    <inbox>false</inbox>
+    <name>Reconcile the ledger</name>
+    <context idref="c2"/>
+    <flagged>true</flagged>
+    <start>2026-10-05T09:00:00.000Z</start>
+    <due>2026-10-09T17:00:00.000Z</due>
+    <note><text>Check the numbers</text></note>
+  </task>
+  <task id="t2">
+    <project/>
+    <task/>
+    <inbox>true</inbox>
+    <name>Email Ana</name>
+    <context/>
+    <flagged>false</flagged>
+  </task>
+  <task-to-tag><task idref="t1"/><context idref="c1"/></task-to-tag>
+</omnifocus>"""
+        folder = self.ofocus_package("Doc.ofocus", xml)
+        target = Store(path=os.path.join(self.home, "ofocus.sqlite3"))
+        self.addCleanup(target.close)
+        result = importer.import_file(target, folder)
+
+        self.assertEqual(result["format"], "ofocus")
+        self.assertEqual(result["projects"], 1)
+        project = target.one("SELECT * FROM item_titles WHERE title = 'Q4 audit'")
+        self.assertEqual(project["parent_title"], "Work")
+        self.assertEqual(project["review"], "weekly")
+        self.assertEqual(project["status"], "active")
+        self.assertIsNone(project["completed_at"])
+        action = target.one("SELECT * FROM item_titles WHERE title = 'Reconcile the ledger'")
+        self.assertEqual(action["parent_title"], "Q4 audit")
+        self.assertEqual(action["defer_at"], "2026-10-05 09:00")
+        self.assertEqual(action["due_at"], "2026-10-09 17:00")
+        self.assertEqual(action["priority"], 1)
+        self.assertEqual(action["notes"], "Check the numbers")
+        self.assertEqual(core.tags_of(target, action["id"]),
+                         ["home", "home>kitchen", importer.default_import_tag()])
+        self.assertEqual(target.one(
+            "SELECT status FROM items WHERE title = 'Email Ana'")["status"], "inbox")
+        # The empty `<project/>` on a plain action must not turn it into one.
+        self.assertIsNone(target.one(
+            "SELECT id FROM item_titles WHERE title = 'Reconcile the ledger' "
+            "AND kind = 'project'"))
+
+    def test_ofocus_transaction_files_apply_over_the_master(self):
+        master = """<omnifocus>
+  <folder id="f1"><name>Home</name></folder>
+  <task id="p1"><project><folder idref="f1"/></project><name>Repairs</name></task>
+  <task id="t1"><task idref="p1"/><name>Old title</name></task>
+  <task id="t2"><task idref="p1"/><name>Doomed task</name></task>
+</omnifocus>"""
+        edit = """<omnifocus>
+  <task id="t1" op="update"><task idref="p1"/><name>New title</name></task>
+  <task id="t2" op="delete"><name>Doomed task</name></task>
+</omnifocus>"""
+        folder = self.ofocus_package("Doc2.ofocus", master, edit)
+        target = Store(path=os.path.join(self.home, "tx.sqlite3"))
+        self.addCleanup(target.close)
+        importer.import_file(target, folder, tag="")
+
+        renamed = target.one("SELECT * FROM item_titles WHERE title = 'New title'")
+        self.assertEqual(renamed["parent_title"], "Repairs")
+        self.assertIsNone(target.one("SELECT id FROM items WHERE title = 'Old title'"))
+        self.assertIsNone(target.one("SELECT id FROM items WHERE title = 'Doomed task'"))
+
+    def test_reads_an_ofocus_archive_handed_over_as_one_file(self):
+        xml = """<omnifocus>
+  <folder id="f1"><name>Work</name></folder>
+  <task id="p1"><project><folder idref="f1"/></project><name>Q4 audit</name></task>
+  <task id="t1"><task idref="p1"/><name>Do a thing</name></task>
+</omnifocus>"""
+        path = os.path.join(self.home, "Doc.ofocus")
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("contents.xml", xml)
+        target = Store(path=os.path.join(self.home, "onearchive.sqlite3"))
+        self.addCleanup(target.close)
+        importer.import_file(target, path, tag="")
+        self.assertEqual(target.one(
+            "SELECT parent_title FROM item_titles WHERE title = 'Do a thing'")["parent_title"],
+            "Q4 audit")
 
     def test_junk_is_skipped_not_fatal(self):
         target = Store(path=os.path.join(self.home, "junk.sqlite3"))

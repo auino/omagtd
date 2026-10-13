@@ -86,6 +86,12 @@ Common verbs: `capture` (inbox), `clarify`/`triage`, `edit`, `defer`,
 `review`, `tag`/`context`, `tree`, `calendar`/`cal`, `agenda`, `settings`,
 `import`, `export`, `db`.
 
+An OmniFocus `import` reads any of its exports — a `.ofocus` document (the
+folder of zipped transaction files OmniFocus writes for *File ▸ Export*),
+a `.ofxml` backup, or the line-oriented `.ofocusmx` text — plus our own
+`json`, `csv` and `zip`. The format is chosen by content unless `--format`
+says otherwise.
+
 An OmniFocus `import` stamps every imported task with a dated context,
 `omnifocus_import_<yyyymmdd>`, so a batch can be found and reviewed together.
 Name your own with `--tag`, or pass `--tag ''` to add none.
