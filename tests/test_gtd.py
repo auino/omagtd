@@ -369,6 +369,8 @@ class Organize(TempStore):
         again = core.ensure_container(self.store, "GARDEN FENCE", core.PROJECT)
         self.assertEqual(again["id"], self.project["id"])
         self.assertEqual(again["title"], "Garden fence")
+        # The project picker lists only projects with open work, so file one.
+        core.organize(self.store, self.action["id"], project="Garden fence")
         rows = [r for r in core.list_view(self.store, "projects")
                 if r["title"] == "Garden fence"]
         self.assertEqual(len(rows), 1)
@@ -1356,6 +1358,10 @@ class Contexts(TempStore):
         self.assertEqual(tag["name"], "home>kitchen")
         parent = core.ensure_tag(self.store, "home")
         self.assertEqual(tag["parent_id"], parent["id"])
+        # The list only carries contexts with open work filed directly under
+        # them, so both need a task before either shows.
+        self.capture("Stock the pantry #home>kitchen")
+        self.capture("Sort the mail #home")
         names = [t["name"] for t in core.list_view(self.store, "tags")]
         self.assertEqual(names, ["home", "home>kitchen"])
 
@@ -1363,6 +1369,7 @@ class Contexts(TempStore):
         item = self.capture("Buy labels #home>kitchen")
         self.assertEqual(item["tags"], ["home>kitchen"])
         self.assertEqual(core.tag_depth("home>kitchen"), 1)
+        self.capture("Sort the mail #home")
         rows = core.list_view(self.store, "tags")
         self.assertEqual([r["name"] for r in rows], ["home", "home>kitchen"])
         self.assertEqual(rows[1]["parent_id"], rows[0]["id"])
@@ -1401,6 +1408,7 @@ class Contexts(TempStore):
     def test_contexts_are_stored_in_lowercase(self):
         tag = core.ensure_tag(self.store, "Errands")
         self.assertEqual(tag["name"], "errands")
+        self.capture("Buy labels #Errands")
         self.assertEqual([r["name"] for r in core.list_view(self.store, "tags")],
                          ["errands"])
 
@@ -1408,11 +1416,14 @@ class Contexts(TempStore):
         first = core.ensure_tag(self.store, "Errands")
         second = core.ensure_tag(self.store, "errands")
         self.assertEqual(first["id"], second["id"])
+        self.capture("Buy labels #errands")
         self.assertEqual(len(core.list_view(self.store, "tags")), 1)
 
     def test_a_nested_context_is_lowercased_segment_by_segment(self):
         tag = core.ensure_tag(self.store, "Home>Kitchen")
         self.assertEqual(tag["name"], "home>kitchen")
+        self.capture("Stock the pantry #home>kitchen")
+        self.capture("Sort the mail #home")
         self.assertEqual([r["name"] for r in core.list_view(self.store, "tags")],
                          ["home", "home>kitchen"])
 
@@ -1421,6 +1432,7 @@ class Contexts(TempStore):
         # Sorted, and home>kitchen/home>hall are separate subcontexts of one
         # parent — typing them in a different case does not merge them.
         self.assertEqual(item["tags"], ["errands", "home>hall", "home>kitchen"])
+        self.capture("Sort the mail #Home")
         self.assertEqual(sorted(r["name"] for r in core.list_view(self.store, "tags")),
                          ["errands", "home", "home>hall", "home>kitchen"])
 
@@ -1615,7 +1627,9 @@ class Tree(TempStore):
         self.assertEqual(core.tree(self.store)["loose"], [])
 
     def test_project_with_no_area_gets_an_unnamed_group(self):
-        core.ensure_container(self.store, "Side quest")
+        project = core.ensure_container(self.store, "Side quest")
+        action = self.capture("Gather seeds")
+        core.organize(self.store, action["id"], project=project["id"])
         data = core.tree(self.store)
         self.assertEqual([p["title"] for a in data["areas"] for p in a["projects"]],
                          ["Side quest"])
@@ -1671,6 +1685,10 @@ class Tree(TempStore):
         again = core.ensure_container(self.store, "Move house>Kitchen>Labels")
         self.assertEqual(again["id"], leaf["id"])
 
+        # A branch is drawn only while open work hangs somewhere below it, so
+        # the leaf needs a task before the path shows at all.
+        action = self.capture("Weigh the jars")
+        core.organize(self.store, action["id"], project=leaf["id"])
         data = core.tree(self.store)
         home = next(a for a in data["areas"] if a["title"] == "Home")
         self.assertEqual([p["title"] for p in home["projects"]], ["Move house"])
@@ -1952,10 +1970,13 @@ class Attachments(TempStore):
         source = self.write("spec.txt", "the spec")
         item = self.capture("Read the spec", attach=[source])
         stored = core.attachments_of(self.store, item["id"])[0]["uri"]
-        self.assertTrue(stored.startswith("attachments/"), stored)
+        # Relative, and filed under this task's own folder, so the copy travels
+        # with the store rather than the machine that made it.
+        self.assertFalse(os.path.isabs(stored), stored)
+        self.assertTrue(stored.startswith(f"attachments/{item['id']}/"), stored)
         path = core.attachment_path(self.store, stored)
-        self.assertEqual(path, core.attachments_dir(self.store)
-                         / os.path.basename(stored))
+        self.assertEqual(path.parent,
+                         core.attachments_dir(self.store) / item["id"])
         with open(path, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "the spec")
         # The original is left where it was: the copy is what travels.
@@ -1991,32 +2012,28 @@ class Attachments(TempStore):
         self.assertTrue(os.path.exists(core.attachment_path(
             self.store, held[0]["uri"])))
 
-    def test_a_copy_shared_by_two_tasks_outlives_one_of_them(self):
+    def test_each_task_keeps_its_own_copy(self):
         source = self.write("photo.png", "the same bytes")
         one = self.capture("One", attach=[source])
         two = self.capture("Two", attach=[source])
         uri = core.attachments_of(self.store, one["id"])[0]["uri"]
-        self.assertEqual(core.attachments_of(self.store, two["id"])[0]["uri"], uri)
+        other = core.attachments_of(self.store, two["id"])[0]["uri"]
 
+        # Each task gets its own copy under its own folder, so removing one
+        # leaves the other's file alone.
+        self.assertNotEqual(uri, other)
         core.remove_attachment(self.store, one["id"], uri)
         self.assertEqual(core.attachments_of(self.store, one["id"]), [])
-        self.assertTrue(os.path.exists(self.managed(uri)))
-
-        core.remove_attachment(self.store, two["id"], uri)
         self.assertFalse(os.path.exists(self.managed(uri)))
+        self.assertTrue(os.path.exists(self.managed(other)))
 
-    def test_the_trash_keeps_the_file_and_purging_takes_it(self):
-        source = self.write("note.txt", "keep me")
+    def test_trashing_a_task_takes_its_attachment_with_it(self):
+        source = self.write("note.txt", "go away")
         item = self.capture("Something", attach=[source])
         path = self.managed(core.attachments_of(self.store, item["id"])[0]["uri"])
 
         core.trash(self.store, item["id"])
-        self.assertTrue(os.path.exists(path), "restoring still needs the file")
-        core.restore(self.store, item["id"])
-        self.assertTrue(os.path.exists(path))
-
-        core.trash(self.store, item["id"])
-        core.purge(self.store, item["id"])
+        self.assertEqual(core.attachments_of(self.store, item["id"]), [])
         self.assertFalse(os.path.exists(path))
 
     def test_purging_a_project_takes_the_files_of_its_actions(self):
