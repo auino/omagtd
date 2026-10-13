@@ -264,7 +264,7 @@ def container_names(store: Store) -> dict[str, str]:
 
 # What each autocomplete kind draws its candidates from. Projects and areas
 # share one namespace in quick entry, so they share one candidate list here.
-COMPLETION_KINDS = ("project", "context", "waiting", "date")
+COMPLETION_KINDS = ("project", "context", "waiting", "date", "defer")
 
 
 def complete_name(store: Store, kind: str, prefix: str) -> str | None:
@@ -284,8 +284,8 @@ def complete_name(store: Store, kind: str, prefix: str) -> str | None:
     if not text:
         return None
 
-    if kind == "date":
-        return dates.complete_when(text)
+    if kind in ("date", "defer"):
+        return dates.complete_when(text, defer=kind == "defer")
     if kind == "project":
         candidates = [row["title"] for row in store.query(
             "SELECT title FROM items WHERE kind IN ('project', 'area') "
@@ -2268,6 +2268,7 @@ def search(store: Store, query: str, *, limit: int | None = 50, offset: int = 0)
 
 SETTING_DEFAULTS = {
       "due_time": "18:00",
+      "defer_time": "09:00",
       "time_format": "24h",
       # How many days an empty project or context is kept before it is deleted.
       # "0" keeps it forever; any positive number removes it once it has sat with
@@ -2332,10 +2333,10 @@ def _empty_retention_days(store: Store, key: str) -> int:
 
 def set_setting(store: Store, key: str, value: str) -> str:
     """Validate and store one setting, returning the normalized value."""
-    if key == "due_time":
+    if key in ("due_time", "defer_time"):
         match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(value).strip())
         if not match:
-            raise GtdError(f"due_time must be a 24h clock like 18:00, not {value!r}")
+            raise GtdError(f"{key} must be a 24h clock like 18:00, not {value!r}")
         value = f"{int(match.group(1)):02d}:{match.group(2)}"
     elif key == "time_format":
         value = str(value).strip().lower()
@@ -2399,6 +2400,7 @@ def bar_snapshot(store: Store) -> dict:
         "flagged_today": data.get("flagged_today", 0),
         "projects_open": data["projects_open"],
         "due_time": settings(store)["due_time"],
+        "defer_time": settings(store)["defer_time"],
         "time_format": settings(store)["time_format"],
         "next_title": store.scalar("SELECT title FROM focus_ten LIMIT 1"),
     }

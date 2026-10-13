@@ -228,17 +228,22 @@ ORDER BY i.priority DESC, COALESCE(i.due_at, '9999') ASC, i.rank ASC, i.created_
 CREATE VIEW IF NOT EXISTS focus_ten AS
 SELECT * FROM next_actions LIMIT 10;
 
--- GTD step 3 — the daily planning list: what is due, and what is flagged.
+-- What is on today: the daily planning list. An action is today's by its
+-- deadline — due today, flagged, or deferred to a window that still covers
+-- today (deferred on or before today and not yet expired: due today or later,
+-- or no deadline at all). A deadline that has already passed is overdue, not
+-- today's.
 CREATE VIEW IF NOT EXISTS today AS
 SELECT * FROM open_items
 WHERE kind = 'action'
-  AND status = 'active'
   AND (
-        due_at IS NOT NULL
+          (due_at IS NOT NULL AND substr(due_at, 1, 10) >= date('now', 'localtime'))
      OR priority > 0
-     OR (defer_at IS NOT NULL AND defer_at <= substr(date('now', 'localtime'), 1, 10) || ' 23:59')
-  )
-ORDER BY priority DESC, COALESCE(due_at, '9999') ASC, created_at ASC;
+     OR (defer_at IS NOT NULL
+         AND defer_at <= substr(date('now', 'localtime'), 1, 10) || ' 23:59'
+         AND (due_at IS NULL OR substr(due_at, 1, 10) >= date('now', 'localtime')))
+    )
+ORDER BY priority DESC, COALESCE(due_at, '9999') ASC, defer_at ASC, created_at ASC, id ASC;
 
 -- Past the deadline and not finished. A hard GTD signal. "Past" is a due date
 -- before today: work left over from an earlier day. Something due later today

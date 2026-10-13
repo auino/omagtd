@@ -428,6 +428,15 @@ class Store:
                 (view,))
             if body and "date('now', 'localtime')" not in body:
                 self.db.execute(f"DROP VIEW IF EXISTS {view}")
+        # The Today view switched from "any due or flagged action" to the
+        # deadline rule that today_open uses, so a deadline already past is
+        # overdue, not today's. A body that still keeps a bare `due_at IS NOT
+        # NULL` (no `>= date('now'...)` guard on it) is stale and is rebuilt.
+        body = self.scalar(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'view' AND name = 'today'")
+        if body and "substr(due_at, 1, 10) >= date('now', 'localtime')" not in body:
+            self.db.execute("DROP VIEW IF EXISTS today")
 
     # ------------------------------------------------------------- queries
 

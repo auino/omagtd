@@ -230,12 +230,14 @@ readonly property var primaryViews: [
   property string leftSection: "tree"
   property int menuSelected: 0
 
-  // Mirrored from `gtd settings --json`: the clock a bare date lands on, how
-  // every stored clock time is shown, and how long the empty projects and
-  // contexts, and the finished tasks, are kept before they are swept. A day
-  // count of 0 means keep it forever.
-   property string dueTime: "18:00"
-   property string timeFormat: "24h"
+    // Mirrored from `gtd settings --json`: the clock a bare due date lands on,
+    // the clock a bare defer date lands on, how every stored clock time is
+    // shown, and how long the empty projects and contexts, and the finished
+    // tasks, are kept before they are swept. A day count of 0 means keep it
+    // forever.
+    property string dueTime: "18:00"
+    property string deferTime: "09:00"
+    property string timeFormat: "24h"
    // The app's own palette: "omarchy", "of-light" or "of-dark".
    property string appTheme: "omarchy"
    property int emptyProjectsKeepDays: 7
@@ -584,6 +586,7 @@ readonly property var primaryViews: [
 
   function applySettings(d) {
     root.dueTime = d.due_time || "18:00"
+    root.deferTime = d.defer_time || "09:00"
     root.timeFormat = d.time_format || "24h"
     root.emptyProjectsKeepDays = d.auto_remove_empty_projects !== undefined
       ? Number(d.auto_remove_empty_projects) : 7
@@ -1694,11 +1697,12 @@ readonly property var primaryViews: [
     root.askComplete(tok.kind, "captureValue", captureField, tok.prefix)
   }
 
-  // A date is completed as a whole: `gtd complete date` answers with the text
-  // to put in the field, already carrying the configured default time.
-  function completeDateField(prop, field) {
+  // A date lands on the configured default time: a defer date on the defer
+  // clock, everything else on the due clock. Tab asks the backend to finish it.
+  function completeDateField(prop, field, defer) {
     if (field.text.trim() === "") return
-    root.askComplete("date", prop, field, field.text.trim())
+    var kind = defer ? "defer" : "date"
+    root.askComplete(kind, prop, field, field.text.trim())
   }
 
   // "YYYY-MM-DD" plus whole days, month ends and leap years included, with
@@ -2030,6 +2034,14 @@ readonly property var primaryViews: [
     var value = String(text || "").trim()
     if (value === "") { root.status = "give a time like 18:00"; return }
     root.run(["settings", "set", "due_time", value], "due time " + value)
+  }
+
+  // A bare defer date lands on this clock instead. The backend validates it,
+  // so a bad entry just reports back in the status line.
+  function saveDeferTime(text) {
+    var value = String(text || "").trim()
+    if (value === "") { root.status = "give a time like 09:00"; return }
+    root.run(["settings", "set", "defer_time", value], "defer time " + value)
   }
 
   function chooseTimeFormat(fmt) {
@@ -3796,7 +3808,7 @@ readonly property var primaryViews: [
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
-                text: "A date with no time lands on this clock."
+                text: "A due date with no time lands on this clock."
               }
 
               TextField {
@@ -3820,6 +3832,40 @@ readonly property var primaryViews: [
                   foreground: root.textColor
                   enabled: !root.busy
                   onClicked: root.saveDueTime(dueTimeField.text)
+                }
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: "A defer date with no time lands on this clock instead."
+              }
+
+              TextField {
+                id: deferTimeField
+                width: parent.width
+                foreground: root.textColor
+                placeholderText: "09:00"
+                text: root.deferTime
+                onAccepted: root.saveDeferTime(text)
+              }
+
+              Flow {
+                width: parent.width
+                spacing: Style.spacing.xs
+
+                Button {
+                  text: "set the time"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: root.saveDeferTime(deferTimeField.text)
                 }
               }
 
@@ -4678,7 +4724,7 @@ text: root.editTitle
                         Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
                         Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
                         Keys.onTabPressed: function(event) {
-                          root.completeDateField("editDefer", deferField)
+                          root.completeDateField("editDefer", deferField, true)
                           event.accepted = true
                         }
                       }

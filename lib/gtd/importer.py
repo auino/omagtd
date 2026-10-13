@@ -94,7 +94,7 @@ CSV_COLUMNS = [
 # ------------------------------------------------------------- utilities
 
 
-def _stamp(value) -> str | None:
+def _stamp(value, *, defer: bool = False) -> str | None:
     """Normalize anything date-shaped — plist date, ISO string, "friday"."""
     if value in (None, "", "0000-00-00 00:00:00"):
         return None
@@ -115,7 +115,7 @@ def _stamp(value) -> str | None:
         except ValueError:
             return None
         return aware.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M")
-    parsed = dates.parse_when(text)
+    parsed = dates.parse_when(text, defer=defer)
     return parsed.strftime("%Y-%m-%d %H:%M") if parsed else None
 
 
@@ -352,7 +352,7 @@ def import_omnifocus(store, payload, *, dry_run=False, progress=False,
             continue
 
         project, area = _split_container(store, entry)
-        defer = _stamp(entry.get("DeferredDate") or entry.get("StartDate"))
+        defer = _stamp(entry.get("DeferredDate") or entry.get("StartDate"), defer=True)
         due = _stamp(entry.get("DueDate"))
         status = _state_of(entry)
         waiting = str(entry.get("WaitingFor") or "").strip()

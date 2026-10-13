@@ -8,8 +8,8 @@ calendar, backed by a sqlite3 database and scriptable through a `gtd` CLI.
 
 ## Human-generated content
 
-As this is a fully AI-generated program and content, for human-generated
-infomation, see the [HUMANS.md](HUMANS.md) file.
+As this is an AI-generated program and content, for human-generated
+infomation about this repository, see the [HUMANS.md](HUMANS.md) file.
 
 ## What's included
 

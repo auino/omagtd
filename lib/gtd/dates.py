@@ -37,25 +37,30 @@ UNITS = {
 # Both live in the database and are set with `gtd settings`; these are the
 # defaults for a fresh install and for code that never configures them.
 DEFAULT_TIME = "18:00"
+DEFAULT_DEFER_TIME = "09:00"
 TIME_FORMAT = "24h"
 
 
-def configure(*, due_time: str | None = None, time_format: str | None = None) -> None:
+def configure(*, due_time: str | None = None, defer_time: str | None = None,
+              time_format: str | None = None) -> None:
     """Point the parser and formatter at the store's settings."""
-    global DEFAULT_TIME, TIME_FORMAT
+    global DEFAULT_TIME, DEFAULT_DEFER_TIME, TIME_FORMAT
     if due_time:
         DEFAULT_TIME = due_time
+    if defer_time:
+        DEFAULT_DEFER_TIME = defer_time
     if time_format:
         TIME_FORMAT = time_format
 
 
 def default_hm() -> tuple[int, int]:
     """The configured default time as whole hours and minutes."""
-    try:
-        hour, minute = str(DEFAULT_TIME).split(":")[:2]
-        return max(0, min(23, int(hour))), max(0, min(59, int(minute)))
-    except (ValueError, IndexError):
-        return 18, 0
+    return _hm(DEFAULT_TIME)
+
+
+def default_defer_hm() -> tuple[int, int]:
+    """The configured default time for a bare defer date."""
+    return _hm(DEFAULT_DEFER_TIME)
 
 
 def format_time(moment: _dt.datetime) -> str:
@@ -141,14 +146,15 @@ DATE_WORDS = (
 _FIXED_TIME = ("tonight", "eow", "eom", "eoy")
 
 
-def complete_when(text: str | None) -> str | None:
+def complete_when(text: str | None, *, defer: bool = False) -> str | None:
     """Finish a half-typed date against the words above.
 
     Tab in a date field wants an answer it can commit to, so a prefix that
     could be two words ("to" -> today, tonight, tomorrow) is left alone; only a
     prefix of exactly one word completes. A bare date word is completed with
     the configured default time, so the field says when it will actually
-    happen rather than leaving that to be guessed.
+    happen rather than leaving that to be guessed. A defer date uses the defer
+    clock (09:00 out of the box) instead.
 
     Returns the whole text with that word replaced, so the caller can put the
     result straight into the field: "next fri" comes back as
@@ -173,20 +179,22 @@ def complete_when(text: str | None) -> str | None:
     if word in _FIXED_TIME:
         done = word
     else:
-        hour, minute = default_hm()
+        hour, minute = default_defer_hm() if defer else default_hm()
         done = f"{word} {hour:02d}:{minute:02d}"
     if head == word:
         return done
     return raw[:len(raw) - len(head)] + done
 
 
-def parse_when(text: str | None, reference: _dt.datetime | None = None) -> _dt.datetime | None:
+def parse_when(text: str | None, *, defer: bool = False,
+               reference: _dt.datetime | None = None) -> _dt.datetime | None:
     """Parse a date expression into a datetime, or None if it is not one.
 
     Understands: today, tonight, tomorrow, weekday names, "next week",
     eow/eom/eoy, +3d / in 3 days, ISO dates, and "5 oct" / "oct 5".
     A bare date lands on the configured default time (18:00 out of the box),
     except "tonight" (20:00); an explicit clock time is honoured when given.
+    A defer date lands on the defer clock (09:00 out of the box) instead.
     """
     if text is None:
         return None
@@ -195,7 +203,10 @@ def parse_when(text: str | None, reference: _dt.datetime | None = None) -> _dt.d
         return None
 
     base = reference or _dt.datetime.now()
-    hour, minute = default_hm()
+    if defer:
+        hour, minute = default_defer_hm()
+    else:
+        hour, minute = default_hm()
     today = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
     words = raw.split()
@@ -243,7 +254,7 @@ def parse_when(text: str | None, reference: _dt.datetime | None = None) -> _dt.d
         if unit:
             return add_unit(today, int(in_delta.group(1)), unit)
 
-    return _parse_absolute(raw, hour, minute)
+    return _parse_absolute(raw, hour, minute, defer=defer)
 
 
 def _next_weekday(base: _dt.datetime, target: int, force_next_week: bool = False) -> _dt.datetime:
@@ -253,10 +264,11 @@ def _next_weekday(base: _dt.datetime, target: int, force_next_week: bool = False
     return base + _dt.timedelta(days=delta)
 
 
-def _parse_absolute(raw: str, hour: int | None = None, minute: int | None = None) -> _dt.datetime | None:
+def _parse_absolute(raw: str, hour: int | None = None, minute: int | None = None,
+                    *, defer: bool = False) -> _dt.datetime | None:
     text = raw.replace("  ", " ").strip()
     if hour is None:
-        hour, minute = default_hm()
+        hour, minute = default_defer_hm() if defer else default_hm()
     dated = [
         "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d %I:%M %p", "%Y-%m-%d %I:%M%p", "%Y-%m-%d %I:%M:%S %p",

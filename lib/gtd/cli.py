@@ -825,7 +825,8 @@ def cmd_settings(args, out: Out, store: Store) -> dict:
     if out.json_mode:
         return {"ok": True, **data}
     out.line(out.bold("Settings"))
-    out.line(f"  due_time      {data['due_time']}   a bare date lands on this clock")
+    out.line(f"  due_time      {data['due_time']}   a bare due date lands on this clock")
+    out.line(f"  defer_time    {data['defer_time']}   a bare defer date lands on this clock")
     out.line(f"  time_format   {data['time_format']}   how clock times are shown")
     out.line(f"  theme         {data['theme']}   omarchy, of-light or of-dark")
     out.line(f"  auto_remove_empty_projects  {data['auto_remove_empty_projects']}   "
@@ -1596,7 +1597,8 @@ def main(argv=None) -> int:
         return 2
 
     knobs = core.settings(store)
-    dates.configure(due_time=knobs["due_time"], time_format=knobs["time_format"])
+    dates.configure(due_time=knobs["due_time"], defer_time=knobs["defer_time"],
+                     time_format=knobs["time_format"])
 
     try:
           # The trash empties itself; nothing here should have to remember to.

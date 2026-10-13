@@ -27,9 +27,13 @@ SELECT
       AND (i.defer_at IS NULL
            OR i.defer_at <= substr(datetime('now', 'localtime'), 1, 16))) AS next,
   SUM(i.kind = 'action' AND i.status = 'active'
-      AND (i.due_at IS NOT NULL OR i.priority > 0
+      AND ((i.due_at IS NOT NULL
+            AND substr(i.due_at, 1, 10) >= date('now', 'localtime'))
+           OR i.priority > 0
            OR (i.defer_at IS NOT NULL
-               AND i.defer_at <= date('now', 'localtime') || ' 23:59'))) AS today,
+               AND i.defer_at <= date('now', 'localtime') || ' 23:59'
+               AND (i.due_at IS NULL
+                    OR substr(i.due_at, 1, 10) >= date('now', 'localtime'))))) AS today,
   SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'trashed')
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) < date('now', 'localtime')) AS overdue,

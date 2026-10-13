@@ -93,6 +93,17 @@ class Dates(unittest.TestCase):
         finally:
             dates.configure(due_time="18:00")
 
+    def test_defer_dates_land_on_the_defer_clock(self):
+        dates.configure(due_time="18:00", defer_time="09:00")
+        try:
+            self.assertEqual(dates.parse_when("tomorrow", defer=True).strftime("%H:%M"),
+                             "09:00")
+            self.assertEqual(dates.parse_when("tomorrow").strftime("%H:%M"), "18:00")
+            self.assertEqual(dates.complete_when("fri", defer=True), "friday 09:00")
+            self.assertEqual(dates.complete_when("fri"), "friday 18:00")
+        finally:
+            dates.configure(due_time="18:00")
+
     def test_twelve_hour_clock_round_trips_and_formats(self):
         parsed = dates.parse_when("2026-10-05 6:00 PM")
         self.assertEqual(parsed.strftime("%Y-%m-%d %H:%M"), "2026-10-05 18:00")
@@ -174,7 +185,7 @@ class QuickEntry(unittest.TestCase):
 
     def test_dates_do_not_swallow_the_sentence(self):
         parsed = self.parse("Pay Ana <next friday >2026-11-01 ~every 2 months =Ana")
-        self.assertEqual(parsed["defer"], dates.parse_when("next friday"))
+        self.assertEqual(parsed["defer"], dates.parse_when("next friday", defer=True))
         self.assertEqual(parsed["due"], dates.parse_when("2026-11-01"))
         self.assertEqual(parsed["repeat"], (2, "month"))
         self.assertEqual(parsed["waiting_for"], "Ana")
@@ -691,10 +702,35 @@ class TodayView(TempStore):
         self.capture("Deferred today, due later", defer="today", due="+3d")
         self.capture("Deferred, still to start", defer="+2d")
         self.capture("Overdue", due="-1d")
-        titles = set(self.titles("today_open"))
+        # "Overdue" has a deadline in the past, so it no longer appears; the
+        # open items all still do.
+        titles = set(self.titles("today"))
         self.assertEqual(titles, {
             "Due today", "Deferred, no deadline",
             "Deferred, due later", "Deferred today, due later"})
+
+    def test_keeps_a_flagged_action_even_when_its_deadline_has_passed(self):
+        # A flag is a standing reason to be on today; its deadline ordering keeps
+        # the open work out in front of it, but the flag itself is not dropped.
+        self.capture("Flagged overdue", priority=1, due="-5d")
+        self.capture("Open window", defer="-1d", due="+3d")
+        titles = self.titles("today")
+        self.assertIn("Flagged overdue", titles)
+        self.assertIn("Open window", titles)
+
+    def test_does_not_show_expired_deadlines(self):
+        # A bare deadline in the past is overdue, not today's, and a deferred
+        # window that has already closed is gone too. The deadline alone is the
+        # reason a past item would otherwise appear, and it is now excluded.
+        self.capture("Deadline in the past", due="-5d")
+        self.capture("Closed window", defer="-10d", due="-5d")
+        self.capture("Still open", defer="-10d", due="+3d")
+        self.capture("No deadline", defer="-10d")
+        titles = set(self.titles("today"))
+        self.assertIn("Still open", titles)
+        self.assertIn("No deadline", titles)
+        self.assertNotIn("Deadline in the past", titles)
+        self.assertNotIn("Closed window", titles)
 
     def test_leaves_out_finished_and_not_yet_started_work(self):
         done = self.capture("Deferred, then done", defer="-1d")
@@ -1502,6 +1538,18 @@ class Completion(TempStore):
         with self.assertRaises(GtdError):
             core.complete_name(self.store, "place", "Ga")
 
+    def test_a_defer_completion_uses_the_defer_clock(self):
+        core.set_setting(self.store, "due_time", "18:00")
+        core.set_setting(self.store, "defer_time", "09:00")
+        dates.configure(due_time="18:00", defer_time="09:00", time_format="24h")
+        try:
+            self.assertEqual(core.complete_name(self.store, "date", "fri"),
+                             "friday 18:00")
+            self.assertEqual(core.complete_name(self.store, "defer", "fri"),
+                             "friday 09:00")
+        finally:
+            dates.configure(due_time="18:00", time_format="24h")
+
 
 # ------------------------------------------------------------- contexts
 
@@ -1920,7 +1968,8 @@ class PillCounts(TempStore):
 class Settings(TempStore):
     def test_settings_round_trip_and_validate(self):
         self.assertEqual(core.settings(self.store),
-                         {"due_time": "18:00", "time_format": "24h",
+                         {"due_time": "18:00", "defer_time": "09:00",
+                          "time_format": "24h",
                           "auto_remove_empty_projects": "7",
                           "auto_remove_empty_contexts": "7",
                           "done_retention_days": "30",
@@ -1928,8 +1977,10 @@ class Settings(TempStore):
                           "theme": "omarchy"})
 
         self.assertEqual(core.set_setting(self.store, "due_time", "7:30"), "07:30")
+        self.assertEqual(core.set_setting(self.store, "defer_time", "8:30"), "08:30")
         self.assertEqual(core.set_setting(self.store, "time_format", "12H"), "12h")
         self.assertEqual(core.settings(self.store)["due_time"], "07:30")
+        self.assertEqual(core.settings(self.store)["defer_time"], "08:30")
 
         # The empty-container settings are day counts, not on/off switches: a
         # number of days to keep, with 0 meaning keep forever.

@@ -172,7 +172,8 @@ def parse(text: str, known: dict[str, str] | None = None) -> dict:
             continue
 
         if token.startswith("<"):
-            value, index = _claim(tokens, index, dates.parse_when)
+            value, index = _claim(tokens, index,
+                                  lambda s: dates.parse_when(s, defer=True))
             if value:
                 out["defer"] = value
             else:
