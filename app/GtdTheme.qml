@@ -106,13 +106,32 @@ QtObject {
     watchChanges: true
     printErrors: false
     onLoaded: root.apply(text())
-    onFileChanged: reload()
+    onFileChanged: root.refresh()
   }
 
-  // Read the file again. A theme switch rewrites it in place and the watcher
-  // does not always follow the swap, so both surfaces re-read when they open:
-  // the colours are right by the time anyone is looking at them.
-  function refresh() { colorsFile.reload() }
+  // The theme swap replaces the whole `current/theme` directory, so a watcher on
+  // colors.toml does not reliably survive it. `theme.name` sits beside the
+  // directory and is rewritten in place on every change, so watching it is the
+  // dependable signal that the desktop palette moved.
+  property FileView themeNameFile: FileView {
+    path: Color.stateHome + "/omarchy/current/theme.name"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: root.refresh()
+  }
+
+  // Read the active theme again. A preset owns the palette and needs nothing;
+  // otherwise this re-reads the app's own status colours *and* reloads the
+  // shared Color/Style singletons. The running shell is told about a theme
+  // change over IPC, but this app is its own quickshell instance and never hears
+  // that, so it has to read the files itself to keep up with the desktop.
+  function refresh() {
+    if (root.themed) return
+    colorsFile.reload()
+    Color.colorsFile.reload()
+    Color.shellFile.reload()
+    Style.refresh()
+  }
 
   // ---- Preset application -------------------------------------------------
   //
@@ -140,7 +159,10 @@ QtObject {
       Style.cornerRadius = root.p.radius
       root._pinned = true
     } else if (root._pinned) {
-      // Hand the singletons back to the desktop and reload its colours.
+      // Hand the singletons back to the desktop and reload its colours, plus
+      // the app's own status colours (they may have moved while a preset was
+      // in charge and `refresh` was skipping the file).
+      root.colorsFile.reload()
       Color.colorsFile.reload()
       Color.shellFile.reload()
       Style.fontFamily = "monospace"
