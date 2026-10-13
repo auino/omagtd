@@ -38,12 +38,15 @@ FocusScope {
 
   property string pluginDir: Qt.resolvedUrl(".").toString().replace("file://", "") + "/"
   readonly property string cli: root.pluginDir + "bin/gtd"
-  readonly property string fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-  readonly property color textColor: Color.popups.text
-  readonly property color dim: Qt.darker(root.textColor, 1.45)
-  readonly property color line: Qt.alpha(root.textColor, 0.18)
-  readonly property color urgent: Color.urgent
-  readonly property color accent: Color.accent
+  readonly property string fontFamily: root.bar ? root.bar.fontFamily : gtdTheme.fontFamily
+  // Every surface colour comes through the theme object, so choosing a palette
+  // repaints the whole view in one place. "omarchy" passes the desktop theme
+  // straight through.
+  readonly property color textColor: gtdTheme.text
+  readonly property color dim: gtdTheme.dim
+  readonly property color line: gtdTheme.line
+  readonly property color urgent: gtdTheme.urgent
+  readonly property color accent: gtdTheme.accent
   readonly property string home: Quickshell.env("HOME")
 
   // ---- Lifetime. Mirrors Panel.qml's contract so the bar widget can drive
@@ -233,6 +236,8 @@ readonly property var primaryViews: [
   // count of 0 means keep it forever.
    property string dueTime: "18:00"
    property string timeFormat: "24h"
+   // The app's own palette: "omarchy", "of-light" or "of-dark".
+   property string appTheme: "omarchy"
    property int emptyProjectsKeepDays: 7
    property int emptyContextsKeepDays: 7
    property int doneRetentionDays: 30
@@ -584,6 +589,8 @@ readonly property var primaryViews: [
     root.doneRetentionDays = d.done_retention_days !== undefined
       ? Number(d.done_retention_days) : 30
     root.showCompleted = d.calendar_show_completed === "on"
+    root.appTheme = d.theme || "omarchy"
+    gtdTheme.applyPreset(root.appTheme)
   }
 
   // After the state lands, re-point the middle column at whatever is selected:
@@ -2012,6 +2019,17 @@ readonly property var primaryViews: [
     root.run(["settings", "set", "time_format", fmt], "time format " + fmt)
   }
 
+  // The fullscreen app's own palette. The command's exit reloads the settings
+  // read, which calls applySettings and repaints the view. The preset is also
+  // applied straight away so the change lands without waiting for the round
+  // trip.
+  function chooseTheme(name) {
+    if (root.appTheme === name) return
+    root.appTheme = name
+    gtdTheme.applyPreset(name)
+    root.run(["settings", "set", "theme", name], "theme " + name)
+  }
+
   // Whether the calendar marks the day a task was finished. A switch in the
   // database, like the deadlines: the command's exit reloads the settings read,
   // so the tick and the green symbols follow on their own.
@@ -2455,7 +2473,7 @@ readonly property var primaryViews: [
     width: Style.space(340)
     height: Style.space(420)
     background: Rectangle {
-      color: Color.background
+      color: gtdTheme.background
       radius: Style.cornerRadius
       border.color: root.line
       border.width: 1
@@ -3629,6 +3647,62 @@ readonly property var primaryViews: [
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 text: "The database is the whole system. These move it in and out; the only exception is the bar pill at the top, which is display only."
+              }
+
+              PanelSectionHeader {
+                width: parent.width
+                text: "Theme"
+                foreground: root.dim
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: "The fullscreen app paints itself in its own theme here, "
+                      + "apart from the bar pill and the panel, which always "
+                      + "follow the desktop. \"Follow Omarchy\" keeps the desktop "
+                      + "palette; the two OF-like palettes pin the app to an "
+                      + "OmniFocus-inspired light or dark look."
+              }
+
+              Flow {
+                width: parent.width
+                spacing: Style.spacing.xs
+
+                Button {
+                  text: (root.appTheme === "omarchy" ? "✓ " : "") + "Follow Omarchy"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: root.chooseTheme("omarchy")
+                }
+
+                Button {
+                  text: (root.appTheme === "of-light" ? "✓ " : "") + "OF-like Light"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: root.chooseTheme("of-light")
+                }
+
+                Button {
+                  text: (root.appTheme === "of-dark" ? "✓ " : "") + "OF-like Dark"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: root.chooseTheme("of-dark")
+                }
               }
 
               PanelSectionHeader {

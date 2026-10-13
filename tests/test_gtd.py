@@ -1686,7 +1686,8 @@ class Settings(TempStore):
                           "auto_remove_empty_projects": "7",
                           "auto_remove_empty_contexts": "7",
                           "done_retention_days": "30",
-                          "calendar_show_completed": "off"})
+                          "calendar_show_completed": "off",
+                          "theme": "omarchy"})
 
         self.assertEqual(core.set_setting(self.store, "due_time", "7:30"), "07:30")
         self.assertEqual(core.set_setting(self.store, "time_format", "12H"), "12h")
@@ -1701,6 +1702,13 @@ class Settings(TempStore):
         self.assertEqual(core.set_setting(self.store, "done_retention_days", "90"), "90")
         self.assertEqual(core.set_setting(self.store, "done_retention_days", "0"), "0")
         self.assertEqual(core.settings(self.store)["done_retention_days"], "0")
+
+        # The fullscreen app's palette is a name from a fixed set; the default
+        # follows the desktop theme.
+        self.assertEqual(core.set_setting(self.store, "theme", "OF-Light"), "of-light")
+        self.assertEqual(core.settings(self.store)["theme"], "of-light")
+        self.assertEqual(core.set_setting(self.store, "theme", "of-dark"), "of-dark")
+        self.assertEqual(core.set_setting(self.store, "theme", "omarchy"), "omarchy")
 
         # The calendar knob is an on/off switch, off by default.
         self.assertEqual(core.set_setting(self.store, "calendar_show_completed", "TRUE"), "on")
@@ -1719,6 +1727,8 @@ class Settings(TempStore):
             core.set_setting(self.store, "done_retention_days", "weeks")
         with self.assertRaises(core.GtdError):
             core.set_setting(self.store, "calendar_show_completed", "sometimes")
+        with self.assertRaises(core.GtdError):
+            core.set_setting(self.store, "theme", "solarized")
         with self.assertRaises(core.GtdError):
             core.set_setting(self.store, "nonsense", "x")
 

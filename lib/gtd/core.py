@@ -2279,6 +2279,10 @@ SETTING_DEFAULTS = {
       # Whether the calendar marks the day a task was completed with a green
       # symbol. Off by default: done work is not on the backlog.
       "calendar_show_completed": "off",
+      # Which palette the fullscreen app paints itself in. "omarchy" follows
+      # the active desktop theme; "of-light" / "of-dark" pin the app to an
+      # OmniFocus-inspired palette of its own.
+      "theme": "omarchy",
       }
 
 # Every spelling people actually type for a switch, folded to the two that are
@@ -2335,6 +2339,10 @@ def set_setting(store: Store, key: str, value: str) -> str:
         value = str(value).strip().lower()
         if value not in ("12h", "24h"):
             raise GtdError(f"time_format must be 12h or 24h, not {value!r}")
+    elif key == "theme":
+        value = str(value).strip().lower()
+        if value not in ("omarchy", "of-light", "of-dark"):
+            raise GtdError(f"theme must be omarchy, of-light or of-dark, not {value!r}")
     elif key in ("auto_remove_empty_projects", "auto_remove_empty_contexts",
                   "done_retention_days"):
           # A day count, not an on/off switch: 0 keeps the container forever, a

@@ -810,8 +810,8 @@ def cmd_bar(args, out: Out, store: Store) -> dict:
 
 
 def cmd_settings(args, out: Out, store: Store) -> dict:
-    """Show the knobs, or turn one: due_time, time_format, auto_remove_*,
-    calendar_show_completed."""
+    """Show the knobs, or turn one: due_time, time_format, theme,
+    auto_remove_*, calendar_show_completed."""
     if args.action == "set":
         value = core.set_setting(store, args.key, args.value)
         data = core.settings(store)
@@ -826,6 +826,7 @@ def cmd_settings(args, out: Out, store: Store) -> dict:
     out.line(out.bold("Settings"))
     out.line(f"  due_time      {data['due_time']}   a bare date lands on this clock")
     out.line(f"  time_format   {data['time_format']}   how clock times are shown")
+    out.line(f"  theme         {data['theme']}   omarchy, of-light or of-dark")
     out.line(f"  auto_remove_empty_projects  {data['auto_remove_empty_projects']}   "
              "delete a project with nothing filed under it")
     out.line(f"  auto_remove_empty_contexts   {data['auto_remove_empty_contexts']}    "
@@ -1476,7 +1477,7 @@ def build_parser() -> argparse.ArgumentParser:
     node = add("settings", cmd_settings, "show or change preferences")
     node.add_argument("action", nargs="?", choices=("show", "set"), default="show")
     node.add_argument("key", nargs="?",
-                        help="due_time, time_format or auto_remove_*")
+                        help="due_time, time_format, theme or auto_remove_*")
     node.add_argument("value", nargs="?")
 
     node = add("calendar", cmd_calendar, "month or range view of commitments",

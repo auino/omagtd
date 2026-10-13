@@ -103,10 +103,18 @@ gtd settings                   # show current values
 gtd settings auto_remove_empty_projects 14   # keep empty projects 14 days
 gtd settings auto_remove_empty_contexts 7
 gtd settings done_retention_days 30
+gtd settings theme of-light    # fullscreen palette: omarchy, of-light or of-dark
 ```
 
 A value of `0` keeps things forever. The bar widget has its own preferences in
 the plugin manager (inbox/next counts, compact mode, refresh interval).
+
+The `theme` setting only affects the standalone fullscreen app, which paints
+itself in its own palette. The default `omarchy` follows the active desktop
+theme; `of-light` and `of-dark` pin it to an OmniFocus-inspired light or dark
+palette (backgrounds, text, accents and status colours, plus a proportional
+font and rounded corners). The bar pill and the panel always follow the desktop
+theme.
 
 ## Development
 
@@ -119,6 +127,11 @@ use the `qs.Commons` / `qs.Ui` modules that Omarchy ships with the shell. The
 standalone app vendors copies of those modules as plain directories
 (`app/Commons` and `app/Ui`, with their `qmldir`s) so it can run in its own
 quickshell process, where the shell-shipped modules are not loaded.
+
+`GtdTheme.qml` exists twice: the root copy is shared by the bar widget and
+panel, while `app/GtdTheme.qml` is the fullscreen app's own and carries the
+extra preset machinery. Keep the two in step when changing the status colours
+or the row glyphs.
 
 ## License
 

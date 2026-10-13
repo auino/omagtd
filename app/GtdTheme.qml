@@ -3,25 +3,78 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 
-// The colour a row wears for its status, read from the active theme so a
-// flagged task here is the same orange as the rest of Omarchy.
+// The palette and status colours the fullscreen app paints itself in.
 //
-// Five values carry every state the list distinguishes: red for what is late,
-// orange for what is flagged, blue for what is waiting, purple for what has
-// been waiting past its date, and the theme's own dimmed foreground for a
-// task whose defer date has not come round. Anything else keeps the colour
-// the surface it is painted in already uses.
+// Two jobs live here. The status colours — red for what is late, orange for a
+// flag, blue for waiting, purple for waiting past its date, green for done,
+// and the theme's own dimmed foreground for a task whose defer date has not
+// come round — are read from the active Omarchy theme, so a flagged task is
+// the same orange as the rest of the desktop.
+//
+// A preset may take over instead: the app then paints in its own OmniFocus-
+// inspired palette and stops following the desktop. The fullscreen app runs in
+// its own quickshell instance, so `applyPreset` can pin the shared Color and
+// Style singletons without touching the desktop's own surfaces; "omarchy"
+// leaves them exactly as they were.
 QtObject {
   id: root
 
-  // Before the theme file answers — or if it never does — fall back to what
-  // Color has already loaded, plus Tokyo Night's own orange and purple.
-   property color red: Color.urgent
-   property color orange: "#eb927b"
-   property color blue: Color.accent
-   property color purple: "#ad8ee6"
-   property color green: "#7cb87c"
-   property color grey: Qt.darker(Color.foreground, 1.7)
+  // "omarchy"  follow the active desktop theme (the default)
+  // "of-light" / "of-dark"  an OmniFocus-inspired palette of the app's own
+  property string preset: "omarchy"
+
+  readonly property var presets: ({
+    "of-light": {
+      background: "#ffffff", text: "#1c1c1e", dim: "#8a8a8e", line: "#d8d8dc",
+      accent: "#6e5ae0", urgent: "#d64541",
+      orange: "#e8a33d", blue: "#3e7bfa", purple: "#8e6fd8",
+      green: "#5aa469", grey: "#9aa0a6",
+      font: "Adwaita Sans", radius: 6
+    },
+    "of-dark": {
+      background: "#1c1c1e", text: "#f2f2f7", dim: "#9a9aa0", line: "#3a3a3f",
+      accent: "#9a86f0", urgent: "#d64541",
+      orange: "#e8a33d", blue: "#4a7cc7", purple: "#a98ce0",
+      green: "#5aa469", grey: "#8a8a8e",
+      font: "Adwaita Sans", radius: 6
+    }
+  })
+
+  readonly property bool themed: root.preset !== "omarchy"
+  readonly property var p: root.presets[root.preset] || null
+
+  // ---- Surface colours ----------------------------------------------------
+
+  // The desktop theme's, or the preset's. These are what every paint in the
+  // fullscreen view reads, through FullScreenContent's root properties.
+  readonly property color text: root.themed ? root.p.text : Color.popups.text
+  readonly property color background: root.themed ? root.p.background : Color.background
+  readonly property color accent: root.themed ? root.p.accent : Color.accent
+  readonly property color urgent: root.themed ? root.p.urgent : Color.urgent
+  readonly property color line: root.themed ? root.p.line : Util.alpha(Color.popups.text, 0.18)
+  // Text set back a step. Darkening is the wrong direction on a light
+  // background, so a preset names its own dim; the desktop theme keeps the
+  // old darkening.
+  readonly property color dim: root.themed ? root.p.dim : Qt.darker(Color.popups.text, 1.45)
+  readonly property string fontFamily: root.themed ? root.p.font : "monospace"
+
+  // ---- Status colours -----------------------------------------------------
+
+  // The underscores are the file-backed (Omarchy) values, filled by apply();
+  // the public names choose between them and the preset.
+   property color _red: Color.urgent
+   property color _orange: "#eb927b"
+   property color _blue: Color.accent
+   property color _purple: "#ad8ee6"
+   property color _green: "#7cb87c"
+   property color _grey: Qt.darker(Color.foreground, 1.7)
+
+  readonly property color red: root.themed ? root.p.urgent : root._red
+  readonly property color orange: root.themed ? root.p.orange : root._orange
+  readonly property color blue: root.themed ? root.p.blue : root._blue
+  readonly property color purple: root.themed ? root.p.purple : root._purple
+  readonly property color green: root.themed ? root.p.green : root._green
+  readonly property color grey: root.themed ? root.p.grey : root._grey
 
   readonly property var statusGlyphs: ({
     inbox: "·", waiting: "W", someday: "S", reference: "R", onhold: "‖",
@@ -35,17 +88,17 @@ QtObject {
     for (var i = 0; i < lines.length; i++) {
       var match = lines[i].match(/^\s*([A-Za-z0-9_-]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
       if (!match) continue
-      if (match[1] === "red") red = match[2]
-      else if (match[1] === "orange") orange = match[2]
-      else if (match[1] === "blue") blue = match[2]
-      else if (match[1] === "magenta") purple = match[2]
+      if (match[1] === "red") _red = match[2]
+      else if (match[1] === "orange") _orange = match[2]
+      else if (match[1] === "blue") _blue = match[2]
+      else if (match[1] === "magenta") _purple = match[2]
       else if (match[1] === "dark_foreground") dimmed = match[2]
       else if (match[1] === "foreground") foreground = match[2]
     }
     // The theme's own dimmed foreground is exactly "text set back a step";
     // a theme without that key still gets a grey, taken from its text colour.
-    if (dimmed) grey = dimmed
-    else if (foreground) grey = Qt.darker(foreground, 1.7)
+    if (dimmed) _grey = dimmed
+    else if (foreground) _grey = Qt.darker(foreground, 1.7)
   }
 
   property FileView colorsFile: FileView {
@@ -60,6 +113,47 @@ QtObject {
   // does not always follow the swap, so both surfaces re-read when they open:
   // the colours are right by the time anyone is looking at them.
   function refresh() { colorsFile.reload() }
+
+  // ---- Preset application -------------------------------------------------
+  //
+  // A preset is not just the surface colours above: it also pins the
+  // typography, the corner rounding and the shared Color/Style singletons so
+  // the kit's buttons and fields follow. The fullscreen app has its own
+  // quickshell instance, so this never reaches the desktop.
+  property bool _pinned: false
+
+  function applyPreset(name) {
+    root.preset = name || "omarchy"
+    root._applyStyle()
+    // The desktop colours load from file a beat after startup; re-assert the
+    // preset once more so a late file load cannot paint over it.
+    if (root.themed) root._reassert.restart()
+  }
+
+  function _applyStyle() {
+    if (root.themed) {
+      Color.foreground = root.p.text
+      Color.background = root.p.background
+      Color.accent = root.p.accent
+      Color.urgent = root.p.urgent
+      Style.fontFamily = root.p.font
+      Style.cornerRadius = root.p.radius
+      root._pinned = true
+    } else if (root._pinned) {
+      // Hand the singletons back to the desktop and reload its colours.
+      Color.colorsFile.reload()
+      Color.shellFile.reload()
+      Style.fontFamily = "monospace"
+      Style.refresh()
+      root._pinned = false
+    }
+  }
+
+  property Timer _reassert: Timer {
+    interval: 400
+    repeat: false
+    onTriggered: root._applyStyle()
+  }
 
   // "YYYY-MM-DD HH:MM", the shape a due or defer date is kept in, so a
   // lexicographic compare is enough. Read fresh rather than held, because a
