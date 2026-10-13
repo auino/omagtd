@@ -165,6 +165,7 @@ def cmd_list(args, out: Out, store: Store) -> dict:
         "inbox": "Inbox", "clarify": "Clarify queue", "focus": "Next actions",
         "ten": "Focus Ten", "focus-ten": "Focus Ten", "today": "Today",
         "forecast": "Forecast", "overdue": "Overdue", "due_today": "Due today",
+        "today_open": "Today",
         "upcoming": "Upcoming", "waiting": "Waiting for",
         "someday": "Someday / Maybe", "flagged": "Flagged",
         "reference": "Reference", "onhold": "On hold", "trash": "Trash",
@@ -898,13 +899,16 @@ def cmd_undo(args, out: Out, store: Store) -> dict:
 
 def cmd_import(args, out: Out, store: Store) -> dict:
     result = importer.import_file(store, args.source, fmt=args.format,
-                                  dry_run=args.dry_run, progress=not out.json_mode and not out.quiet)
+                                  dry_run=args.dry_run, tag=args.tag,
+                                  progress=not out.json_mode and not out.quiet)
     if out.json_mode:
         return {"ok": True, **result}
     head = "would import" if args.dry_run else "imported"
     out.line(f"{out.green(head)} {result['projects']} projects, "
              f"{result['actions']} actions, {result['tags']} contexts, "
              f"{result['skipped']} skipped")
+    if result.get("tag"):
+        out.line(out.dim(f"  tagged every task {result['tag']}"))
     if result["warnings"]:
         for warning in result["warnings"][:20]:
             out.line(out.yellow("  ! ") + warning)
@@ -1531,6 +1535,10 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("source")
     node.add_argument("--format", choices=("auto", "omnifocus", "ofxml", "ofocusmx",
                                            "csv", "json", "zip"), default="auto")
+    node.add_argument("--tag", "-t",
+                      help="add a context to every imported task "
+                           "(default: omnifocus_import_<yyyymmdd> for OmniFocus "
+                           "exports; pass '' to add none)")
     node.add_argument("--dry-run", action="store_true", help="report without writing")
 
     node = add("export", cmd_export, "export everything")

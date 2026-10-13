@@ -2040,6 +2040,8 @@ VIEW_SQL = {
     "overdue": "FROM item_titles t WHERE t.id IN (SELECT id FROM overdue)",
     "due_today": "FROM item_titles t WHERE t.id IN (SELECT id FROM due_today) "
                  "ORDER BY t.due_at, t.priority DESC",
+    "today_open": "FROM item_titles t WHERE t.id IN (SELECT id FROM today_open) "
+                  "ORDER BY COALESCE(t.due_at, '9999'), t.priority DESC, t.defer_at",
     "upcoming": "FROM item_titles t WHERE t.id IN (SELECT id FROM upcoming) "
                 "ORDER BY t.due_at, t.priority DESC",
     "waiting": "FROM item_titles t WHERE t.id IN (SELECT id FROM waiting_for)",

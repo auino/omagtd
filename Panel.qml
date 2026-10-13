@@ -47,11 +47,12 @@ Panel {
   property string nextTitle: ""
   property bool stale: false
 
-  // ---- The one list this panel shows: what is due today.
+  // ---- The one list this panel shows: what is on today — due today, and
+  // deferred work whose window has opened.
   // The other views have a home in the fullscreen window, which has the room
   // for them; the panel is the thing you glance at, so it keeps one list.
   readonly property var section: ({ key: "today", label: "Today",
-                                    args: ["list", "due_today", "--limit", "80"] })
+                                    args: ["list", "today_open", "--limit", "80"] })
 
   property var rows: []        // display rows, precomputed from the JSON
   property var current: null   // the row under the cursor

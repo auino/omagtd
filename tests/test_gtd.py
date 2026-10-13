@@ -680,6 +680,29 @@ class Views(TempStore):
         self.assertIn("today", snapshot)
 
 
+class TodayView(TempStore):
+    def test_holds_due_today_and_deferred_work_in_its_window(self):
+        self.capture("Due today", due="today")
+        self.capture("Deferred, no deadline", defer="-1d")
+        self.capture("Deferred, due later", defer="-1d", due="+3d")
+        self.capture("Deferred today, due later", defer="today", due="+3d")
+        self.capture("Deferred, still to start", defer="+2d")
+        self.capture("Overdue", due="-1d")
+        titles = set(self.titles("today_open"))
+        self.assertEqual(titles, {
+            "Due today", "Deferred, no deadline",
+            "Deferred, due later", "Deferred today, due later"})
+
+    def test_leaves_out_finished_and_not_yet_started_work(self):
+        done = self.capture("Deferred, then done", defer="-1d")
+        core.complete(self.store, done["id"])
+        self.capture("Deferred, still to start", defer="+2d")
+        self.assertEqual(self.titles("today_open"), [])
+
+    def titles(self, view):
+        return [item["title"] for item in core.list_view(self.store, view)]
+
+
 class Identity(TempStore):
     def test_ids_are_unique_short_and_resolvable(self):
         first = self.capture("One")
@@ -842,7 +865,7 @@ class OmniFocusXML(TempStore):
 """
         target = Store(path=os.path.join(self.home, "of.sqlite3"))
         self.addCleanup(target.close)
-        importer.import_file(target, self.write("backup.ofxml", plist))
+        importer.import_file(target, self.write("backup.ofxml", plist), tag="")
 
         self.assertEqual(target.scalar(
             "SELECT parent_title FROM item_titles WHERE title = 'Roof'"), "Home admin")
@@ -946,6 +969,49 @@ Repetition: every 2 months
             "SELECT kind, status, title, COALESCE(defer_at,''), COALESCE(due_at,''), "
             "COALESCE(repeat,'') FROM items ORDER BY kind, title")
         return [tuple(row) for row in rows]
+
+
+class ImportTag(TempStore):
+    MX = ("Title: Buy milk\nType: Action\nContext: errands\n\n"
+          "Title: Call Bob\nType: Action\n")
+
+    def write(self, name, text):
+        path = os.path.join(self.home, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def tags_of(self, store, title):
+        row = store.one("SELECT id FROM items WHERE title = ?", (title,))
+        return core.tags_of(store, row["id"])
+
+    def test_omnifocus_import_stamps_a_dated_context_by_default(self):
+        target = Store(path=os.path.join(self.home, "of.sqlite3"))
+        self.addCleanup(target.close)
+        importer.import_file(target, self.write("a.ofocusmx", self.MX))
+        stamped = importer.default_import_tag()
+        self.assertIn(stamped, self.tags_of(target, "Buy milk"))
+        self.assertIn(stamped, self.tags_of(target, "Call Bob"))
+        # The context the export carried survives alongside the stamped one.
+        self.assertIn("errands", self.tags_of(target, "Buy milk"))
+
+    def test_the_stamp_can_be_named_or_turned_off(self):
+        named = Store(path=os.path.join(self.home, "named.sqlite3"))
+        self.addCleanup(named.close)
+        importer.import_file(named, self.write("a.ofocusmx", self.MX),
+                             tag="imported")
+        self.assertEqual(self.tags_of(named, "Call Bob"), ["imported"])
+
+        bare = Store(path=os.path.join(self.home, "bare.sqlite3"))
+        self.addCleanup(bare.close)
+        importer.import_file(bare, self.write("b.ofocusmx", self.MX), tag="")
+        self.assertEqual(self.tags_of(bare, "Call Bob"), [])
+
+    def test_the_other_formats_are_not_stamped_by_default(self):
+        target = Store(path=os.path.join(self.home, "csv.sqlite3"))
+        self.addCleanup(target.close)
+        importer.import_csv(target, "title\nAlpha\n")
+        self.assertEqual(self.tags_of(target, "Alpha"), [])
 
 
 class Database(TempStore):

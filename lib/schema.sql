@@ -258,6 +258,24 @@ WHERE kind = 'action'
   AND substr(due_at, 1, 10) = date('now', 'localtime')
 ORDER BY due_at, priority DESC;
 
+-- What is on today: everything due today, plus deferred work whose window
+-- covers today — it has already started (deferred on or before today) and has
+-- not expired (due today or later, or no deadline at all). A task deferred
+-- last week and due next week belongs in the day's plan even though neither
+-- stamp lands on today; a deferred task with no deadline is live too.
+CREATE VIEW IF NOT EXISTS today_open AS
+SELECT * FROM open_items
+WHERE kind = 'action'
+  AND (
+        (due_at IS NOT NULL
+           AND substr(due_at, 1, 10) = date('now', 'localtime'))
+     OR (defer_at IS NOT NULL
+         AND defer_at <= substr(date('now', 'localtime'), 1, 10) || ' 23:59'
+         AND (due_at IS NULL
+              OR substr(due_at, 1, 10) >= date('now', 'localtime')))
+  )
+ORDER BY COALESCE(due_at, '9999') ASC, priority DESC, defer_at ASC;
+
 -- Due after today: the forward half of the deadline line.
 CREATE VIEW IF NOT EXISTS upcoming AS
 SELECT * FROM open_items

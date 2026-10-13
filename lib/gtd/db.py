@@ -15,7 +15,7 @@ import sqlite3
 import shutil
 from pathlib import Path
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
 
 # Crockford-ish alphabet: no i, l, o, u, so an id can be read aloud on the

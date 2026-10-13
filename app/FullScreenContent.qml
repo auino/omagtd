@@ -134,7 +134,7 @@ FocusScope {
     { key: "inbox",     label: "Inbox",     args: ["list", "inbox", "--limit", "200"] },
     { key: "clarify",   label: "Clarify",   args: ["list", "clarify", "--limit", "200"] },
     { key: "focus",     label: "Focus",     args: ["list", "focus", "--limit", "200"] },
-    { key: "today",     label: "Today",     args: ["list", "due_today"] },
+    { key: "today",     label: "Today",     args: ["list", "today_open"] },
     { key: "forecast",  label: "Upcoming",  args: ["list", "upcoming"] },
     { key: "overdue",   label: "Overdue",   args: ["list", "overdue"] },
     { key: "flagged",   label: "Flagged",   args: ["list", "flagged", "--limit", "200"] },
@@ -297,6 +297,9 @@ readonly property var primaryViews: [
 
   property string importPath: ""
   property bool importDryRun: true
+  // The context stamped on every imported task, so a batch can be found and
+  // reviewed together. Dated by default; editable, and clearing it adds none.
+  property string importTag: "omnifocus_import_" + root.stamp.split("-")[0]
   property string exportOfPath: ""
   property string exportZipPath: ""
   property string stamp: {
@@ -1500,6 +1503,15 @@ readonly property var primaryViews: [
                || row.status === "trashed" }
   }
 
+  // The Today list mixes what is due today with work whose defer window covers
+  // today. When such a task carries no deadline of its own, the defer date is
+  // the only stamp worth showing beside it.
+  function todayRow(row) {
+    var item = root.itemRow(row)
+    if (!item.meta && row.defer_at) item.meta = root.stamp16(row.defer_at)
+    return item
+  }
+
   // Bucket rows by the project they belong to: named buckets first,
   // alphabetical, and the tasks filed nowhere last under "No project". The SQL
   // orders waiting tasks by the person they wait on, which is the wrong
@@ -1617,6 +1629,12 @@ readonly property var primaryViews: [
         for (var q = 0; q < bucket.rows.length; q++)
           out.push(root.itemRow(bucket.rows[q]))
       }
+      return out
+    }
+
+    if (key === "today") {
+      var tItems = data.items || []
+      for (var tr = 0; tr < tItems.length; tr++) out.push(root.todayRow(tItems[tr]))
       return out
     }
 
@@ -2090,7 +2108,8 @@ readonly property var primaryViews: [
   function doImport() {
     var path = root.importPath.trim()
     if (path === "") { root.status = "give a file to import"; return }
-    var args = ["import", path, "--format", "omnifocus"]
+    var args = ["import", path, "--format", "omnifocus",
+                "--tag", root.importTag.trim()]
     if (root.importDryRun) args = args.concat(["--dry-run"])
     root.run(args, root.importDryRun ? "dry run" : "imported")
   }
@@ -4012,6 +4031,15 @@ readonly property var primaryViews: [
                 text: root.importPath
                 onTextEdited: root.importPath = text
                 onAccepted: root.doImport()
+              }
+
+              TextField {
+                id: importTagField
+                width: parent.width
+                foreground: root.textColor
+                placeholderText: "context to add to every imported task"
+                text: root.importTag
+                onTextEdited: root.importTag = text
               }
 
               Flow {

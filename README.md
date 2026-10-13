@@ -13,8 +13,8 @@ TODO
 ## What's included
 
 - **Bar pill** — inbox and next-action counts, with a compact glyph-only mode.
-- **Panel** — a quick overlay for what is due today, driven entirely by the
-  keyboard.
+- **Panel** — a quick overlay for what is on today: what is due, plus deferred
+  work whose window has opened. Driven entirely by the keyboard.
 - **Fullscreen view** — the whole five-step workflow in one window (see
   *Standalone app* below).
 - **`gtd` CLI** — every step is scriptable, so it can be bound to a hotkey.
@@ -85,6 +85,10 @@ Common verbs: `capture` (inbox), `clarify`/`triage`, `edit`, `defer`,
 `postpone`/`roll`, `open` (open an item's link), `today`, `focus`, `engage`,
 `review`, `tag`/`context`, `tree`, `calendar`/`cal`, `agenda`, `settings`,
 `import`, `export`, `db`.
+
+An OmniFocus `import` stamps every imported task with a dated context,
+`omnifocus_import_<yyyymmdd>`, so a batch can be found and reviewed together.
+Name your own with `--tag`, or pass `--tag ''` to add none.
 
 ### Data location
 

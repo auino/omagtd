@@ -281,16 +281,31 @@ def _blank_result(source: str) -> dict:
             "tags": 0, "attachments": 0, "skipped": 0, "remapped": 0, "warnings": []}
 
 
+# The import formats whose contexts are worth stamping with a dated "this batch
+# came from OmniFocus" tag, so an import can be found and reviewed as a group.
+OMNIFOCUS_FORMATS = ("omnifocus", "ofxml", "ofocusmx")
+
+
+def default_import_tag(day: _dt.date | None = None) -> str:
+    """The context an OmniFocus import stamps on every task unless told otherwise.
+
+    A dated name — ``omnifocus_import_20261013`` — so each import batch is its
+    own context and yesterday's stays put.
+    """
+    return "omnifocus_import_" + (day or _dt.date.today()).strftime("%Y%m%d")
+
+
 # ------------------------------------------------------------ OmniFocus
 
 
 def import_omnifocus(store, payload, *, dry_run=False, progress=False,
-                     source: str = "omnifocus") -> dict:
+                     source: str = "omnifocus", extra_tag: str = "") -> dict:
     """Import an OmniFocus payload: a parsed plist, or .ofocusmx records."""
     from . import core  # imported here: core does not need the importer
 
     result = _blank_result(source)
     records = payload if isinstance(payload, list) else _walk(payload, [])
+    extra_tag = str(extra_tag or "").strip()
 
     # Containers first: an action can reference a project that appears later in
     # the file, and OmniFocus does not promise an order.
@@ -347,10 +362,13 @@ def import_omnifocus(store, payload, *, dry_run=False, progress=False,
             priority = min(1, int(explicit))
 
         note = entry.get("Note") or entry.get("Notes") or ""
+        tags = _record_tags(entry)
+        if extra_tag and extra_tag not in tags:
+            tags.append(extra_tag)
         item = core.capture(
             store, None, title=title, parse_text=False,
             project=project, area=None if project else area,
-            tags=_record_tags(entry), priority=priority,
+            tags=tags, priority=priority,
             defer=defer, due=due,
             waiting_for=waiting if status == "waiting" else None,
             repeat=_repeat_from_plist(entry.get("Repetition") or entry.get("RepetitionRule")),
@@ -686,11 +704,12 @@ def _restore_attachments(store, item_id: str, fields: dict, result: dict) -> Non
 
 
 def _import_rows(store, records, result: dict, source: str,
-                 dry_run: bool = False) -> dict:
+                 dry_run: bool = False, extra_tag: str = "") -> dict:
     from . import core
 
     renames: list[tuple[str, str]] = []
     attachment_jobs: list[tuple[str, dict]] = []
+    extra_tag = str(extra_tag or "").strip()
 
     for raw in records:
         row = {str(k).lower(): v for k, v in dict(raw).items() if k}
@@ -698,6 +717,12 @@ def _import_rows(store, records, result: dict, source: str,
         if not fields["title"]:
             result["skipped"] += 1
             continue
+        if extra_tag and fields["kind"] not in ("project", "area") \
+                and extra_tag not in fields["tags"]:
+            # An additional context for the batch, alongside whatever the export
+            # already carried. Containers do not take contexts, so this is only
+            # for the actions.
+            fields["tags"] = list(fields["tags"]) + [extra_tag]
 
         if fields["kind"] in ("project", "area"):
             nested = fields["kind"] == "project"
@@ -776,16 +801,16 @@ def _import_rows(store, records, result: dict, source: str,
 
 
 def import_csv(store, text: str, *, dry_run=False, progress=False,
-               source: str = "csv") -> dict:
+               source: str = "csv", extra_tag: str = "") -> dict:
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames or "title" not in {f.lower() for f in reader.fieldnames}:
         raise GtdError("CSV needs at least a 'title' column")
     return _import_rows(store, list(reader), _blank_result(source), source,
-                       dry_run=dry_run)
+                       dry_run=dry_run, extra_tag=extra_tag)
 
 
 def import_json(store, payload, *, dry_run=False, progress=False,
-                source: str = "json") -> dict:
+                source: str = "json", extra_tag: str = "") -> dict:
     """Round-trip our own export; also accepts a bare list of items."""
     if isinstance(payload, dict):
         records = payload.get("items") or payload.get("actions") or []
@@ -801,10 +826,12 @@ def import_json(store, payload, *, dry_run=False, progress=False,
         if name:
             ensure_tag(store, name)
             result["tags"] += 1
-    return _import_rows(store, records, result, source, dry_run=dry_run)
+    return _import_rows(store, records, result, source, dry_run=dry_run,
+                        extra_tag=extra_tag)
 
 
-def _import_zip(store, path: Path, *, dry_run=False, progress=False) -> dict:
+def _import_zip(store, path: Path, *, dry_run=False, progress=False,
+                extra_tag: str = "") -> dict:
     """Read the JSON payload out of one of our own zip exports. The archive
     also carries a raw sqlite snapshot, but importing through the JSON (and
     the shared item pipeline) keeps ids, parents and tags consistent with
@@ -847,20 +874,29 @@ def _import_zip(store, path: Path, *, dry_run=False, progress=False) -> dict:
                         if ref and ref in extracted:
                             attachment["uri"] = extracted[ref]
             return import_json(store, payload, dry_run=dry_run, progress=progress,
-                               source=f"{path}:{member}")
+                               source=f"{path}:{member}", extra_tag=extra_tag)
 
 
 # ------------------------------------------------------------ entry point
 
 
 def import_file(store, source: str, *, fmt: str = "auto", dry_run: bool = False,
-                progress: bool = False) -> dict:
-    """Import from a file or folder, choosing the format by content."""
+                progress: bool = False, tag: str | None = None) -> dict:
+    """Import from a file or folder, choosing the format by content.
+
+    ``tag`` is an extra context stamped on every imported task. Left as None it
+    falls back to a dated ``omnifocus_import_<yyyymmdd>`` for OmniFocus
+    exports, and to nothing at all for the other formats; an empty string turns
+    the stamp off explicitly.
+    """
     path = Path(os.path.expanduser(source))
     if not path.exists():
         raise GtdError(f"no such file or folder: {source}")
 
     kind = fmt if fmt != "auto" else _sniff(path)
+    if tag is None:
+        tag = default_import_tag() if kind in OMNIFOCUS_FORMATS else ""
+    extra_tag = str(tag).strip()
 
     def note(message: str) -> None:
         if progress and not dry_run:
@@ -872,17 +908,21 @@ def import_file(store, source: str, *, fmt: str = "auto", dry_run: bool = False,
         store.run("BEGIN")
     try:
         if kind in ("omnifocus", "ofxml", "ofocusmx"):
-            result = _import_omnifocus_path(store, path, kind, note)
+            result = _import_omnifocus_path(store, path, kind, note,
+                                            extra_tag=extra_tag)
         elif kind == "csv":
             result = import_csv(
                 store, path.read_text(encoding="utf-8", errors="replace"),
-                dry_run=dry_run, progress=progress, source=str(path))
+                dry_run=dry_run, progress=progress, source=str(path),
+                extra_tag=extra_tag)
         elif kind == "json":
             result = import_json(
                 store, json.loads(path.read_text(encoding="utf-8", errors="replace")),
-                dry_run=dry_run, progress=progress, source=str(path))
+                dry_run=dry_run, progress=progress, source=str(path),
+                extra_tag=extra_tag)
         elif kind == "zip":
-            result = _import_zip(store, path, dry_run=dry_run, progress=progress)
+            result = _import_zip(store, path, dry_run=dry_run, progress=progress,
+                                 extra_tag=extra_tag)
         else:
             raise GtdError(f"unsupported import format: {kind}")
     except Exception:
@@ -893,6 +933,7 @@ def import_file(store, source: str, *, fmt: str = "auto", dry_run: bool = False,
         store.run("ROLLBACK")
 
     result["format"] = kind
+    result["tag"] = extra_tag
     return result
 
 
@@ -930,7 +971,8 @@ def _sniff(path: Path) -> str:
     return "ofxml"
 
 
-def _import_omnifocus_path(store, path: Path, kind: str, note) -> dict:
+def _import_omnifocus_path(store, path: Path, kind: str, note,
+                           extra_tag: str = "") -> dict:
     if path.is_dir():
         texts = sorted(path.glob("*.ofocusmx"))
         if texts:
@@ -939,7 +981,9 @@ def _import_omnifocus_path(store, path: Path, kind: str, note) -> dict:
                 note(f"reading {text_path.name}")
                 records.extend(_mx_to_records(parse_ofocusmx(
                     text_path.read_text(encoding="utf-8", errors="replace"))))
-            return import_omnifocus(store, records, source=f"{path} ({len(texts)} files)")
+            return import_omnifocus(store, records,
+                                    source=f"{path} ({len(texts)} files)",
+                                    extra_tag=extra_tag)
         plists = sorted(path.glob("*.plist")) or sorted(path.glob("*.ofocusbackup"))
         if not plists:
             raise GtdError(f"{path} has no .ofocusmx or .plist files")
@@ -950,7 +994,7 @@ def _import_omnifocus_path(store, path: Path, kind: str, note) -> dict:
     if kind == "ofocusmx":
         return import_omnifocus(
             store, _mx_to_records(parse_ofocusmx(raw.decode("utf-8", "replace"))),
-            source=str(path))
+            source=str(path), extra_tag=extra_tag)
 
     try:
         payload = plistlib.loads(raw)
@@ -958,9 +1002,9 @@ def _import_omnifocus_path(store, path: Path, kind: str, note) -> dict:
         text = raw.decode("utf-8", "replace")
         if "Title:" in text:
             return import_omnifocus(store, _mx_to_records(parse_ofocusmx(text)),
-                                   source=str(path))
+                                    source=str(path), extra_tag=extra_tag)
         raise GtdError(f"{path.name} is not a readable OmniFocus export")
-    return import_omnifocus(store, payload, source=str(path))
+    return import_omnifocus(store, payload, source=str(path), extra_tag=extra_tag)
 
 
 # ----------------------------------------------------------------- export
