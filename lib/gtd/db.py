@@ -428,15 +428,18 @@ class Store:
                 (view,))
             if body and "date('now', 'localtime')" not in body:
                 self.db.execute(f"DROP VIEW IF EXISTS {view}")
-        # The Today view switched from "any due or flagged action" to the
-        # deadline rule that today_open uses, so a deadline already past is
-        # overdue, not today's. A body that still keeps a bare `due_at IS NOT
-        # NULL` (no `>= date('now'...)` guard on it) is stale and is rebuilt.
-        body = self.scalar(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'view' AND name = 'today'")
-        if body and "substr(due_at, 1, 10) >= date('now', 'localtime')" not in body:
-            self.db.execute("DROP VIEW IF EXISTS today")
+        # The Today views used to take in deferred work with no deadline, which
+        # kept an old someday/maybe task on Today forever. They now require a
+        # real deadline, so a body that still admits `due_at IS NULL` inside its
+        # defer window — or that never got the `>= date('now'...)` deadline
+        # rule at all — is stale and is rebuilt from schema.sql.
+        for view in ("today", "today_open"):
+            body = self.scalar(
+                "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
+                (view,))
+            if body and ("due_at IS NULL" in body
+                         or "substr(due_at, 1, 10) >= date('now', 'localtime')" not in body):
+                self.db.execute(f"DROP VIEW IF EXISTS {view}")
 
     # ------------------------------------------------------------- queries
 

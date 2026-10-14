@@ -702,12 +702,11 @@ class TodayView(TempStore):
         self.capture("Deferred today, due later", defer="today", due="+3d")
         self.capture("Deferred, still to start", defer="+2d")
         self.capture("Overdue", due="-1d")
-        # "Overdue" has a deadline in the past, so it no longer appears; the
-        # open items all still do.
+        # "Overdue" has a deadline in the past, so it no longer appears, and a
+        # task deferred with no deadline is Next's, not today's.
         titles = set(self.titles("today"))
         self.assertEqual(titles, {
-            "Due today", "Deferred, no deadline",
-            "Deferred, due later", "Deferred today, due later"})
+            "Due today", "Deferred, due later", "Deferred today, due later"})
 
     def test_keeps_a_flagged_action_even_when_its_deadline_has_passed(self):
         # A flag is a standing reason to be on today; its deadline ordering keeps
@@ -728,7 +727,7 @@ class TodayView(TempStore):
         self.capture("No deadline", defer="-10d")
         titles = set(self.titles("today"))
         self.assertIn("Still open", titles)
-        self.assertIn("No deadline", titles)
+        self.assertNotIn("No deadline", titles)
         self.assertNotIn("Deadline in the past", titles)
         self.assertNotIn("Closed window", titles)
 
@@ -737,6 +736,43 @@ class TodayView(TempStore):
         core.complete(self.store, done["id"])
         self.capture("Deferred, still to start", defer="+2d")
         self.assertEqual(self.titles("today_open"), [])
+
+    def test_today_open_drops_a_deferred_task_with_no_deadline(self):
+        # The full-screen Today list and the panel section read today_open; a
+        # task deferred with no deadline used to sit there forever, showing its
+        # old defer date where a deadline would go.
+        self.capture("Deferred, no deadline", defer="-30d")
+        self.capture("Deferred, due later", defer="-1d", due="+3d")
+        self.assertEqual(set(self.titles("today_open")), {"Deferred, due later"})
+
+    def test_the_today_counter_ignores_deferred_work_with_no_deadline(self):
+        # The stats fast path has to agree with the view it mirrors, so it
+        # drops deferred work with no deadline the same way.
+        core.ensure_container(self.store, "Garden fence", core.PROJECT)
+        deferred = self.capture("Deferred, no deadline", defer="-1d")
+        core.clarify(self.store, deferred["id"], "actionable",
+                     project="Garden fence")
+        self.assertEqual(core.stats(self.store)["today"], 0)
+        due = self.capture("Due today", due="today")
+        core.clarify(self.store, due["id"], "actionable", project="Garden fence")
+        self.assertEqual(core.stats(self.store)["today"], 1)
+
+    def test_rebuilds_a_today_open_that_still_took_deferred_work(self):
+        # A database written before the fix keeps the old today_open body,
+        # which CREATE VIEW IF NOT EXISTS never replaces. Simulate one, then
+        # prove a reopen repairs it.
+        self.store.db.execute("DROP VIEW IF EXISTS today_open")
+        self.store.db.execute(
+            "CREATE VIEW today_open AS SELECT * FROM open_items "
+            "WHERE kind = 'action' AND ("
+            "(due_at IS NOT NULL AND substr(due_at, 1, 10) = date('now', 'localtime')) "
+            "OR (defer_at IS NOT NULL "
+            "AND defer_at <= substr(date('now', 'localtime'), 1, 10) || ' 23:59' "
+            "AND (due_at IS NULL OR substr(due_at, 1, 10) >= date('now', 'localtime'))))")
+        self.capture("Deferred someday", defer="-30d")
+        self.assertIn("Deferred someday", self.titles("today_open"))
+        self.store.ensure()
+        self.assertNotIn("Deferred someday", self.titles("today_open"))
 
     def titles(self, view):
         return [item["title"] for item in core.list_view(self.store, view)]

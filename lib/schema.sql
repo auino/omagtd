@@ -229,19 +229,15 @@ CREATE VIEW IF NOT EXISTS focus_ten AS
 SELECT * FROM next_actions LIMIT 10;
 
 -- What is on today: the daily planning list. An action is today's by its
--- deadline — due today, flagged, or deferred to a window that still covers
--- today (deferred on or before today and not yet expired: due today or later,
--- or no deadline at all). A deadline that has already passed is overdue, not
--- today's.
+-- deadline — due today or later — or by a flag. A deadline that has already
+-- passed is overdue, not today's, and deferred work needs a deadline of its
+-- own: a task deferred with no deadline belongs to Next, not the day's plan.
 CREATE VIEW IF NOT EXISTS today AS
 SELECT * FROM open_items
 WHERE kind = 'action'
   AND (
           (due_at IS NOT NULL AND substr(due_at, 1, 10) >= date('now', 'localtime'))
      OR priority > 0
-     OR (defer_at IS NOT NULL
-         AND defer_at <= substr(date('now', 'localtime'), 1, 10) || ' 23:59'
-         AND (due_at IS NULL OR substr(due_at, 1, 10) >= date('now', 'localtime')))
     )
 ORDER BY priority DESC, COALESCE(due_at, '9999') ASC, defer_at ASC, created_at ASC, id ASC;
 
@@ -265,9 +261,9 @@ ORDER BY due_at, priority DESC;
 
 -- What is on today: everything due today, plus deferred work whose window
 -- covers today — it has already started (deferred on or before today) and has
--- not expired (due today or later, or no deadline at all). A task deferred
--- last week and due next week belongs in the day's plan even though neither
--- stamp lands on today; a deferred task with no deadline is live too.
+-- not expired (its deadline is today or later). A task deferred last week and
+-- due next week belongs in the day's plan even though neither stamp lands on
+-- today; a task deferred with no deadline does not, it belongs to Next.
 CREATE VIEW IF NOT EXISTS today_open AS
 SELECT * FROM open_items
 WHERE kind = 'action'
@@ -276,8 +272,8 @@ WHERE kind = 'action'
            AND substr(due_at, 1, 10) = date('now', 'localtime'))
      OR (defer_at IS NOT NULL
          AND defer_at <= substr(date('now', 'localtime'), 1, 10) || ' 23:59'
-         AND (due_at IS NULL
-              OR substr(due_at, 1, 10) >= date('now', 'localtime')))
+         AND due_at IS NOT NULL
+         AND substr(due_at, 1, 10) >= date('now', 'localtime'))
   )
 ORDER BY COALESCE(due_at, '9999') ASC, priority DESC, defer_at ASC;
 
