@@ -49,6 +49,25 @@ FocusScope {
   readonly property color accent: gtdTheme.accent
   readonly property string home: Quickshell.env("HOME")
 
+  // The app version, shown as info in Settings. Read from the plugin manifest
+  // so there is one source of truth; a missing or unreadable file leaves this
+  // empty and the About line falls back to "dev".
+  property string appVersion: ""
+  function parseVersion(raw) {
+    try {
+      var d = JSON.parse(String(raw || ""))
+      return d && d.version ? String(d.version) : ""
+    } catch (e) { return "" }
+  }
+  FileView {
+    id: manifestFile
+    path: root.pluginDir + "../manifest.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.appVersion = root.parseVersion(text())
+    onFileChanged: root.appVersion = root.parseVersion(text())
+  }
+
   // ---- Lifetime. Mirrors Panel.qml's contract so the bar widget can drive
   // both surfaces the same way.
   property bool opened: false
@@ -283,6 +302,7 @@ readonly property var primaryViews: [
   property string editDue: ""
   property string editDefer: ""
   property string editDuration: ""
+  property string editRepeat: ""
   property string editNotes: ""
   property string editLink: ""
   property string editAttachments: ""
@@ -464,6 +484,7 @@ readonly property var primaryViews: [
     id: commandProc
     onExited: {
       root.commandPending = false
+      statusTimer.restart()
       root.reload()
       root.refreshBar()
     }
@@ -493,7 +514,7 @@ readonly property var primaryViews: [
   // the structured editor on exactly that item.
   Process {
     id: captureProc
-    onExited: { root.reload(); root.refreshBar() }
+    onExited: { statusTimer.restart(); root.reload(); root.refreshBar() }
     stdout: StdioCollector {
       onStreamFinished: {
         var out = String(this.text).trim()
@@ -1238,6 +1259,29 @@ readonly property var primaryViews: [
     return m + "m"
   }
 
+  // The store keeps a repeat rule as {interval, unit, from}; the editor works
+  // in the same human text the CLI takes ("every week", "every 2 months"), so
+  // this renders a stored rule back to that text for the field to show.
+  function repeatText(rule) {
+    if (!rule) return ""
+    var interval = parseInt(rule.interval || 1)
+    var unit = String(rule.unit || "week")
+    var text = interval > 1 ? "every " + interval + " " + unit + "s"
+                            : "every " + unit
+    if (String(rule.from || "complete") === "schedule") text += " after schedule"
+    return text
+  }
+
+  // The three one-tap periods, plus "never" to clear the rule. The value is
+  // the same human text the field holds, so a preset lights up whenever the
+  // field matches it.
+  readonly property var repeatPresets: [
+    { value: "every week", label: "1 week" },
+    { value: "every month", label: "1 month" },
+    { value: "every year", label: "1 year" },
+    { value: "", label: "never" }
+  ]
+
   // Every task row uses the same layout: decorator and title at the left,
   // deadline at the right. Defer dates and completion stamps are not deadlines.
   function itemMeta(item) {
@@ -1759,6 +1803,7 @@ readonly property var primaryViews: [
     root.editDue = root.stamp16(item.due_at)
     root.editDefer = root.stamp16(item.defer_at)
     root.editDuration = item.duration ? root.humanMinutes(item.duration) : ""
+    root.editRepeat = root.repeatText(item.repeat)
     root.editNotes = item.notes || ""
     root.editLink = item.url || ""
     var attach = item.attachments || []
@@ -1828,6 +1873,15 @@ readonly property var primaryViews: [
     if (duration !== wasDuration) {
       if (duration === "") args.push("--clear-duration")
       else args.push("--duration", duration)
+    }
+
+    // The rule is stored as a struct but edited as the human text, so compare
+    // the two rendered forms; --repeat only sets, --no-repeat only clears.
+    var repeat = root.editRepeat.trim()
+    var wasRepeat = root.repeatText(original && original.repeat)
+    if (repeat !== wasRepeat) {
+      if (repeat === "") args.push("--no-repeat")
+      else args.push("--repeat", repeat)
     }
 
     // --tag only adds and --untag only removes, so diff the two lists instead of
@@ -1991,6 +2045,9 @@ readonly property var primaryViews: [
     root.commandPending = true
     root.lastVerb = args[0]
     root.status = label || args.join(" ")
+    // Restart the countdown so a fresh action is not cleared early by the
+    // timer left over from the previous one; onExited restarts it again.
+    statusTimer.restart()
     exec(commandProc, [root.cli].concat(args).concat(["--json"]))
   }
 
@@ -2022,6 +2079,7 @@ readonly property var primaryViews: [
       return
     }
     root.status = "captured"
+    statusTimer.restart()
     root.exec(captureProc, [root.cli, "capture", value, "--json"])
     root.captureValue = ""
   }
@@ -2262,7 +2320,8 @@ readonly property var primaryViews: [
   // and Down move a whole field at a time.
   readonly property var formFields: [
     titleField, projectField, tagsField,
-    dueField, deferField, durationField, linkField, notesField
+    dueField, deferField, durationField, repeatGroup, repeatField,
+    linkField, notesField
   ]
 
   function formStep(delta) {
@@ -2654,6 +2713,7 @@ readonly property var primaryViews: [
     blocked: captureField.activeFocus || projectField.activeFocus || tagsField.activeFocus
       || titleField.activeFocus || dueField.activeFocus
       || deferField.activeFocus || durationField.activeFocus || notesField.activeFocus
+      || repeatGroup.activeFocus || repeatField.activeFocus
       || linkField.activeFocus
       || searchField.activeFocus || projectNameField.activeFocus
       || importField.activeFocus || ofField.activeFocus || zipField.activeFocus
@@ -2745,6 +2805,16 @@ readonly property var primaryViews: [
     interval: 220
     repeat: false
     onTriggered: if (root.opened && root.view.key === "search") root.reloadList()
+  }
+
+  // The status line is a passing note about the last action. A few seconds
+  // after an action finishes, it clears so the shortcut legend returns to the
+  // footer; each new action restarts the countdown.
+  Timer {
+    id: statusTimer
+    interval: 5000
+    repeat: false
+    onTriggered: root.status = ""
   }
 
   // ---- Rendering ------------------------------------------------------------
@@ -4304,9 +4374,29 @@ readonly property var primaryViews: [
                      root.settingsOpen = false
                      root.pickViewByKey("trash")
                     }
-                  }
-                }
-              }
+                   }
+                 }
+
+               PanelSectionHeader {
+                 width: parent.width
+                 text: "About"
+                 foreground: root.dim
+                 fontFamily: root.fontFamily
+               }
+
+               Text {
+                 width: parent.width
+                 textFormat: Text.PlainText
+                 wrapMode: Text.WordWrap
+                 color: root.dim
+                 font.family: root.fontFamily
+                 font.pixelSize: Style.font.caption
+                 text: "OmaGTD "
+                   + (root.appVersion !== "" ? "v" + root.appVersion : "dev")
+                   + " — Getting Things Done for Omarchy, modelled on OmniFocus. "
+                   + "MIT licensed."
+               }
+             }
 
             // ---- Item pane
             Column {
@@ -4793,9 +4883,9 @@ text: root.editTitle
                     color: root.dim
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
-                    text: "an estimate of the time it takes, never a deadline"
-                  }
-                }
+                     text: "an estimate of the time it takes, never a deadline"
+                   }
+                 }
 
                  Column {
                    width: parent.width
@@ -4803,7 +4893,57 @@ text: root.editTitle
 
                    Text {
                      textFormat: Text.PlainText
-                     text: "link"
+                     text: "repeat"
+                     color: root.dim
+                     font.family: root.fontFamily
+                     font.pixelSize: Style.font.caption
+                   }
+
+                   ButtonGroup {
+                     id: repeatGroup
+                     options: root.repeatPresets
+                     value: root.editRepeat
+                     foreground: root.textColor
+                     accent: root.accent
+                     fontFamily: root.fontFamily
+                     fontSize: Style.font.caption
+                     onChanged: function(v) { root.editRepeat = v; root.formDirty = true }
+                     // Left/Right (or h/l) and Enter are the group's own; Up and
+                     // Down step out to the field above and below it.
+                     Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                     Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
+                   }
+
+                   TextField {
+                     id: repeatField
+                     width: parent.width
+                     foreground: root.textColor
+                     placeholderText: "or a custom period, e.g. every 2 weeks"
+                     text: root.editRepeat
+                     onTextEdited: { root.editRepeat = text; root.formDirty = true }
+                     Keys.onUpPressed: function(event) { root.formStep(-1); event.accepted = true }
+                     Keys.onDownPressed: function(event) { root.formStep(1); event.accepted = true }
+                   }
+
+                   Text {
+                     width: parent.width
+                     textFormat: Text.PlainText
+                     wrapMode: Text.WordWrap
+                     color: root.dim
+                     font.family: root.fontFamily
+                     font.pixelSize: Style.font.caption
+                     text: "repeatable: finishing it brings the next one back; "
+                         + "with a defer date and a deadline it walks both forward"
+                   }
+                 }
+
+                  Column {
+                    width: parent.width
+                    spacing: Style.spacing.xxs
+
+                    Text {
+                      textFormat: Text.PlainText
+                      text: "link"
                      color: root.dim
                      font.family: root.fontFamily
                      font.pixelSize: Style.font.caption
