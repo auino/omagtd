@@ -4,7 +4,7 @@ In, in decreasing order of fidelity:
 
 ``ofxml``      an OmniFocus backup / export (a plist). Folders, projects,
                areas, contexts, notes, flags, defer and due dates,
-               waiting-for, completion, repetition and review dates survive.
+               completion, repetition and review dates survive.
 ``ofocus``     an OmniFocus document — in practice a folder of zipped
                transaction files, each holding a ``contents.xml``. The
                database itself: folders, projects, contexts (with their
@@ -55,6 +55,7 @@ LOCATION_STATUS = {
     "reference": "reference",
     "completed": "done",
     "dropped": "dropped",
+    "archived": "archived",
 }
 
 STATE_STATUS = {
@@ -69,6 +70,7 @@ STATE_STATUS = {
     "inbox": "inbox",
     "completed": "done",
     "dropped": "dropped",
+    "archived": "archived",
     # Our own states, which OmniFocus does not have but our export writes.
     "done": "done",
     "trashed": "trashed",
@@ -86,7 +88,7 @@ UNIT_MAP = {
 
 CSV_COLUMNS = [
     "id", "kind", "title", "status", "project", "area", "tags",
-    "priority", "defer", "due", "waiting_for", "notes", "url", "repeat",
+    "priority", "defer", "due", "notes", "url", "repeat",
     "review", "reviewed", "completed",
 ]
 
@@ -355,7 +357,6 @@ def import_omnifocus(store, payload, *, dry_run=False, progress=False,
         defer = _stamp(entry.get("DeferredDate") or entry.get("StartDate"), defer=True)
         due = _stamp(entry.get("DueDate"))
         status = _state_of(entry)
-        waiting = str(entry.get("WaitingFor") or "").strip()
         flagged = bool(entry.get("Flagged"))
 
         # OmniFocus only knows flagged / not flagged, and so does this: a flag
@@ -375,7 +376,6 @@ def import_omnifocus(store, payload, *, dry_run=False, progress=False,
             project=project, area=None if project else area,
             tags=tags, priority=priority,
             defer=defer, due=due,
-            waiting_for=waiting if status == "waiting" else None,
             repeat=_repeat_from_plist(entry.get("Repetition") or entry.get("RepetitionRule")),
             review=_review_interval(entry),
             notes=note if isinstance(note, str) else "",
@@ -388,9 +388,6 @@ def import_omnifocus(store, payload, *, dry_run=False, progress=False,
                 core.set_status(store, item["id"], status)
             except GtdError as exc:
                 result["warnings"].append(f"{title}: {exc}")
-        if status == "waiting" and waiting:
-            store.run("UPDATE items SET waiting_for = ? WHERE id = ?",
-                      (waiting, item["id"]))
 
         if status == "trashed":
             store.run("UPDATE items SET prev_status = 'active' WHERE id = ?",
@@ -423,7 +420,7 @@ MX_KEYS = {
     "container": "Container", "type": "Type", "note": "Note", "notes": "Note",
     "tags": "Tags", "flagged": "Flagged", "deferreddate": "DeferredDate",
     "startdate": "StartDate", "duedate": "DueDate", "completeddate": "CompletedDate",
-    "droppeddate": "DroppedDate", "waitingfor": "WaitingFor", "state": "State",
+    "droppeddate": "DroppedDate", "state": "State",
     "locationinfolder": "LocationInFolder", "repetition": "Repetition",
     "repetitionmode": "RepetitionMode", "repetitioninterval": "RepetitionInterval",
     "repetitionunit": "RepetitionUnit", "reviewdate": "ReviewDate",
@@ -535,7 +532,6 @@ def _mx_to_records(rows: list[dict]) -> list[dict]:
                                ("DueDate", "DueDate"),
                                ("CompletedDate", "CompletedDate"),
                                ("DroppedDate", "DroppedDate"),
-                               ("WaitingFor", "WaitingFor"),
                                ("ReviewDate", "ReviewDate"),
                                ("ReviewInterval", "ReviewInterval")):
             if row.get(source) and target not in entry:
@@ -604,7 +600,6 @@ def _row_to_fields(row: dict) -> dict:
         "priority": max(0, min(1, priority)),
         "defer": clean("defer") or None,
         "due": clean("due") or None,
-        "waiting_for": clean("waiting_for") or clean("waiting") or None,
         "notes": clean("notes") or "",
         "repeat": clean("repeat") or None,
         "review": review,
@@ -666,7 +661,6 @@ def _overwrite(store, item_id: str, fields: dict) -> dict:
         "notes": fields["notes"],
         "url": fields.get("url"),
         "priority": fields["priority"],
-        "waiting_for": fields["waiting_for"],
         "repeat": fields["repeat"],
         "review": fields["review"],
         "defer_at": core._field(fields["defer"]),
@@ -754,7 +748,7 @@ def _import_rows(store, records, result: dict, source: str,
                 store, None, title=fields["title"], notes=fields["notes"],
                 project=fields["project"], area=fields["area"], tags=fields["tags"],
                 priority=fields["priority"], defer=fields["defer"], due=fields["due"],
-                waiting_for=fields["waiting_for"], repeat=fields["repeat"],
+                repeat=fields["repeat"],
                 review=fields["review"],
                 to_inbox=(fields["status"] == "inbox"))
             result["actions"] += 1
@@ -775,7 +769,7 @@ def _import_rows(store, records, result: dict, source: str,
                 # `complete` would duplicate it on every import.
                 stamp = _stamp(fields["completed"]) or now()
                 store.run(
-                    "UPDATE items SET status = ?, waiting_for = NULL, "
+                    "UPDATE items SET status = ?, "
                     "completed_at = ?, dropped_at = ? WHERE id = ?",
                     (fields["status"],
                      stamp if fields["status"] == "done" else None,
@@ -1336,6 +1330,7 @@ OFXML_STATE = {
     "onhold": "Active",
     "done": "Completed",
     "dropped": "Dropped",
+    "archived": "Dropped",
     "trashed": "Dropped",
 }
 
@@ -1410,7 +1405,6 @@ def _export_row(item: dict, tags: list[str] | None = None, store=None) -> dict:
         "priority": min(1, int(item.get("priority") or 0)),
         "defer": item.get("defer_at"),
         "due": item.get("due_at"),
-        "waiting_for": item.get("waiting_for"),
         "notes": item.get("notes") or "",
         "url": item.get("url"),
         "attachments": _export_attachments(item, store),
@@ -1479,8 +1473,6 @@ def export_text(store, fmt: str = "json") -> str:
                 entry["DeferredDate"] = _dt.datetime.strptime(row["defer"], "%Y-%m-%d %H:%M")
             if row.get("due"):
                 entry["DueDate"] = _dt.datetime.strptime(row["due"], "%Y-%m-%d %H:%M")
-            if row.get("waiting_for"):
-                entry["WaitingFor"] = row["waiting_for"]
             if row.get("repeat"):
                 parsed = _repeat_parts(row["repeat"])
                 entry["Repetition"] = {

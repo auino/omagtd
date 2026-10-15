@@ -78,6 +78,13 @@ Window {
       root.requestActivate()
     }
 
+    // The panel's Enter: land on the task in Today with its editor showing.
+    function editItem(id: string): void {
+      var c = content.item
+      if (c && typeof c.showItemSelected === "function") c.showItemSelected(id)
+      root.requestActivate()
+    }
+
     function view(name: string): void {
       var c = content.item
       if (!c) return

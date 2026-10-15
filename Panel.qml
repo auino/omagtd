@@ -41,6 +41,7 @@ Panel {
   property string dueTime: "18:00"
   property string timeFormat: "24h"
   property int waiting: 0
+  property int archived: 0
   property int flagged: 0
   property int flaggedToday: 0
   property int projectsOpen: 0
@@ -121,7 +122,7 @@ Panel {
   function isLate(item) {
     if (!item || !item.due_at) return false
     var status = item.status || ""
-    if (status === "done" || status === "dropped" || status === "trashed") return false
+    if (status === "done" || status === "dropped" || status === "trashed" || status === "archived") return false
     return String(item.due_at).slice(0, 16) < root.nowStamp()
   }
 
@@ -140,17 +141,34 @@ Panel {
     if (row.kind === "action" && row.parent_title) meta.push(row.parent_title)
     var tagList = row.tags || []
     if (tagList.length) meta.push("#" + tagList.join(" #"))
-    if (row.waiting_for) meta.push("waiting " + row.waiting_for)
     var due = row.due_at || row.defer_at
     if (due) meta.push(shortWhen(due))
     // A finished task only turns up in search, so when it does the one thing
     // worth saying is when it was finished.
-    var archived = row.status === "done"
-    if (archived && row.completed_at) meta.push("completed " + shortWhen(row.completed_at))
+    var archived = row.status === "done" || row.status === "archived"
+    if (archived && (row.completed_at || row.archived_at)) {
+      var c = row.completed_at || row.archived_at
+      meta.push(archived ? "archived " + shortWhen(c) : "completed " + shortWhen(c))
+    } else if (archived && row.completed_at) meta.push("completed " + shortWhen(row.completed_at))
     return { id: row.id, title: row.title,
              meta: meta.join("  "),
              glyph: gtdTheme.rowGlyph(row),
              late: root.isLate(row), archived: archived, raw: row, kind: "item" }
+  }
+
+  // The Today list mixes what is due today with work whose defer window has
+  // opened. A task there because its defer date came round — with its deadline
+  // still ahead — wears the defer mark, matching the full view and the calendar.
+  function todayRow(row) {
+    var item = root.itemRow(row)
+    // A task in Today because its defer window opened wears the defer mark in
+    // the same grey the full view and the calendar give work scheduled for a
+    // day.
+    var deferred = gtdTheme.isDeferred(row)
+      || gtdTheme.scheduledIntoToday(row, root.nowStamp().slice(0, 10))
+    item.deferred = deferred
+    if (deferred) item.glyph = gtdTheme.rowGlyph(row, true)
+    return item
   }
 
   // Waiting is filed by project, so the bucketing matches the fullscreen
@@ -235,6 +253,13 @@ Panel {
       return out
     }
 
+    if (key === "today") {
+      var todayItems = data.items || []
+      for (var tq = 0; tq < todayItems.length; tq++)
+        out.push(root.todayRow(todayItems[tq]))
+      return out
+    }
+
     var rows = data.items || []
     for (var r = 0; r < rows.length; r++) out.push(root.itemRow(rows[r]))
     return out
@@ -284,6 +309,7 @@ Panel {
           root.overdue = d.overdue || 0
           root.upcoming = d.upcoming || 0
           root.waiting = d.waiting || 0
+          root.archived = d.archived || 0
           root.flaggedToday = d.flagged_today || 0
         } catch (e) {
           root.stale = true
@@ -454,7 +480,14 @@ Panel {
   }
 
   function activate() {
-    // Enter is the capture+edit command; it never opens task details.
+    // Enter on a selected task hands it to the full view: Today, the task
+    // selected, its editor showing in the right part. With no row under the
+    // cursor it keeps its old meaning and runs capture+edit.
+    if (root.current && root.current.id && root.hostWidget
+        && typeof root.hostWidget.editItem === "function") {
+      root.hostWidget.editItem(root.current.id)
+      return
+    }
     root.captureAndEdit(root.captureValue)
   }
 
@@ -664,7 +697,7 @@ Panel {
               id: captureField
               width: parent.width - editButton.width - parent.spacing
               foreground: root.textColor
-              placeholderText: "Capture…  #context /Project/ <defer >due =who ~repeat *30m"
+              placeholderText: "Capture…  #context /Project/ <defer >due ~repeat *30m"
               text: root.captureValue
               onTextEdited: root.captureValue = text
               onAccepted: root.capture(text)
@@ -774,7 +807,8 @@ Panel {
                 color: gtdTheme.colorFor(rowItem.modelData.raw, rowItem.modelData.late,
                   rowItem.index === root.selected
                     ? root.textColor
-                    : (rowItem.modelData.kind === "done" ? root.dim : root.textColor))
+                    : (rowItem.modelData.kind === "done" ? root.dim : root.textColor),
+                  rowItem.modelData.deferred === true)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.strikeout: rowItem.modelData.archived === true
@@ -804,7 +838,7 @@ Panel {
             font.pixelSize: Style.font.caption
             text: {
               if (root.status !== "") return root.status
-              return "↑↓ move  c capture  ↓ capture+edit  f flag  d done  x drop  p postpone  o open  z undo  m full screen  r reload  esc close"
+              return "↑↓ move  ↵ edit  c capture  ↓ capture+edit  f flag  d done  x drop  p postpone  o open  z undo  m full screen  r reload  esc close"
             }
           }
         }

@@ -164,9 +164,10 @@ FocusScope {
        { key: "calendar",  label: "Calendar",  args: ["calendar"] },
       { key: "review",    label: "Review",    args: ["review", "weekly"] },
       { key: "log",       label: "Log",       args: ["list", "log", "--limit", "200"] },
-      { key: "trash",     label: "Trash",     args: ["trash", "--list"] },
-      { key: "hideZeroCounts", label: "Top Bar: Hide 0/0", args: ["setting", "--json"] },
-      { key: "search",    label: "Search",    args: ["search", "--limit", "200"] }
+       { key: "archived",  label: "Archive",   args: ["list", "archived", "--limit", "200"] },
+       { key: "trash",     label: "Trash",     args: ["trash", "--list"] },
+       { key: "hideZeroCounts", label: "Top Bar: Hide 0/0", args: ["setting", "--json"] },
+       { key: "search",    label: "Search",    args: ["search", "--limit", "200"] }
   ]
   property int viewIndex: 0
   readonly property var view: root.views[Math.max(0, Math.min(root.viewIndex, root.views.length - 1))]
@@ -176,8 +177,8 @@ FocusScope {
   // `views` stays reachable by name (`view <key>`) and by the number keys.
 readonly property var primaryViews: [
                  ["inbox"],
-                 ["calendar", "waiting", "review"],
-                 ["overdue", "today", "forecast"]
+                  ["calendar", "waiting", "review"],
+                  ["overdue", "today", "forecast"]
                 ]
   readonly property var primaryKeys: {
     var keys = []
@@ -222,6 +223,10 @@ readonly property var primaryViews: [
 
   property var rows: []
   property int rowSelected: 0
+  // A hand-off from the panel's Enter asks the middle cursor to come to rest on
+  // one task. The list is fetched asynchronously, so the id is parked here and
+  // the first page that carries the row moves the cursor onto it.
+  property string pendingSelectId: ""
   // The query behind the middle column, without `--json` or an offset, so a
   // later page is the same request with a bigger offset. `listOffset` is how
   // many items the backend has handed over so far; `listMore` says the last
@@ -261,10 +266,14 @@ readonly property var primaryViews: [
    property string appTheme: "omarchy"
    property int emptyProjectsKeepDays: 7
    property int emptyContextsKeepDays: 7
-   property int doneRetentionDays: 30
-   // Whether the calendar shows a green mark (and the selected-day list the
-   // rows) for completed tasks. Mirrored from the same knob in the database.
-   property bool showCompleted: false
+    property int doneRetentionDays: 30
+    property int archiveRetentionDays: 0
+    // Whether the calendar shows a green mark (and the selected-day list the
+    // rows) for completed tasks. Mirrored from the same knob in the database.
+    property bool showCompleted: false
+    // The narrowest the window gets before the layout drops to a message
+    // asking to enlarge it, mirrored from the same setting in the database.
+    property int fullscreenWidthLimit: 768
 
     // Bundled app icon: the plugin's app/icon.png, shown in the hero.
     property url appIcon: Qt.resolvedUrl("icon.png")
@@ -615,8 +624,12 @@ readonly property var primaryViews: [
       ? Number(d.auto_remove_empty_contexts) : 7
     root.doneRetentionDays = d.done_retention_days !== undefined
       ? Number(d.done_retention_days) : 30
+    root.archiveRetentionDays = d.archive_retention_days !== undefined
+      ? Number(d.archive_retention_days) : 0
     root.showCompleted = d.calendar_show_completed === "on"
     root.appTheme = d.theme || "omarchy"
+    root.fullscreenWidthLimit = d.fullscreen_width_limit !== undefined
+      ? Number(d.fullscreen_width_limit) : 768
     gtdTheme.applyPreset(root.appTheme)
   }
 
@@ -751,6 +764,15 @@ readonly property var primaryViews: [
     // Enter only act on rows, so step forward to the first real one.
     while (root.rowSelected < root.rows.length
            && root.rows[root.rowSelected].kind === "header") root.rowSelected++
+    // A hand-off (the panel's Enter) wants the cursor on one task. Land it now
+    // that the rows are known, so the highlight and the right pane both follow.
+    if (root.pendingSelectId !== "" && root.listRequestOffset === 0) {
+      var wanted = root.pendingSelectId
+      root.pendingSelectId = ""
+      for (var s = 0; s < root.rows.length; s++) {
+        if (String(root.rows[s].id) === wanted) { root.rowSelected = s; break }
+      }
+    }
     // The selection is live even before the code loads: show its editor
     // straight away instead of an empty pane.
     root.syncDetailToSelection()
@@ -803,6 +825,21 @@ readonly property var primaryViews: [
     // Same flickable as the settings pane: a task opens at its own top.
     detailFlick.contentY = 0
     root.reloadDetail(id)
+  }
+
+  // The panel's Enter hands one task over: land on Today, drop the cursor on
+  // the task's row, and let the right column show its editor. The task always
+  // comes from the panel's Today list, so the Today view is where its row sits.
+  function showItemSelected(id) {
+    if (!id) return
+    root.topFocused = false
+    root.projectFocus = null
+    root.contextFocus = null
+    root.column = 1
+    root.pendingSelectId = String(id)
+    var today = root.viewIndexFor("today")
+    if (root.viewIndex !== today) root.viewIndex = today
+    else if (root.opened) root.reloadList()
   }
 
   // Point the middle cursor at a row and let the right column follow it, so a
@@ -898,7 +935,7 @@ readonly property var primaryViews: [
   function isLate(item) {
     if (!item || !item.due_at) return false
     var status = item.status || ""
-    if (status === "done" || status === "dropped" || status === "trashed") return false
+    if (status === "done" || status === "dropped" || status === "trashed" || status === "archived") return false
     return String(item.due_at).slice(0, 16) < root.nowStamp()
   }
 
@@ -947,12 +984,16 @@ readonly property var primaryViews: [
       var actions = node.actions || []
       for (var a = 0; a < actions.length; a++) {
         var act = actions[a]
+        // The same defer mark the calendar gives work scheduled for a day, so a
+        // deferred task reads identically across the tree and the day's list.
+        var deferred = gtdTheme.isDeferred(act)
+          || gtdTheme.scheduledIntoToday(act, root.today)
         out.push({ kind: "item", id: act.id, title: act.title,
-                   meta: root.itemMeta(act), glyph: gtdTheme.rowGlyph(act),
-                   raw: act, late: root.isLate(act),
+                   meta: root.itemMeta(act), glyph: gtdTheme.rowGlyph(act, deferred),
+                   raw: act, deferred: deferred, late: root.isLate(act),
                    archived: root.isArchived(act),
-                   dead: act.status === "done" || act.status === "dropped"
-                     || act.status === "trashed" })
+                    dead: act.status === "done" || act.status === "dropped"
+                      || act.status === "trashed" || act.status === "archived" })
       }
       var subs = node.projects || []
       for (var s = 0; s < subs.length; s++) {
@@ -1303,7 +1344,7 @@ readonly property var primaryViews: [
   // Finished tasks are struck through: visible only in search, and visibly not
   // something still to be done.
   function isArchived(item) {
-    return !!item && item.status === "done"
+    return !!item && (item.status === "done" || item.status === "archived")
   }
 
   function flattenTree(data) {
@@ -1359,7 +1400,7 @@ readonly property var primaryViews: [
       var list = cell[names[n]] || []
       for (var i = 0; i < list.length; i++) {
         var entry = list[i]
-        var complete = entry.status === "done"
+        var complete = entry.status === "done" || entry.status === "archived"
         if (complete) { if (root.showCompleted) marks.green += 1; continue }
         var late = names[n] === "overdue" || root.isLate(entry)
         var waiting = entry.status === "waiting"
@@ -1441,18 +1482,23 @@ readonly property var primaryViews: [
     var groups = [["overdue", "late", true], ["due", "due", false],
                   ["scheduled", "defer", false]]
     if (root.showCompleted) groups.push(["completed", "done", true])
+    var today = String(root.today || root.nowStamp()).slice(0, 10)
     for (var g = 0; g < groups.length; g++) {
       var list = cell[groups[g][0]] || []
       var scoped = groups[g][0] === "scheduled"
       for (var i = 0; i < list.length; i++) {
         var entry = list[i]
+        // A task earns the defer mark across its whole defer window. On the day
+        // it comes due the calendar files it under "due" rather than
+        // "scheduled", so recompute the mark from the dates: a task whose
+        // defer window has opened reads the same here as the Today list.
+        var deferred = gtdTheme.isDeferred(entry)
+          || gtdTheme.scheduledIntoToday(entry, today)
         out.push({ kind: "item", id: entry.id, title: entry.title,
                    meta: root.itemMeta(entry),
-                   glyph: gtdTheme.rowGlyph(entry, scoped),
+                   glyph: gtdTheme.rowGlyph(entry, deferred),
                    raw: entry,
-                   // A deferred task wears its D across its defer window; the
-                   // day it comes due it is an ordinary task again.
-                   deferred: scoped,
+                   deferred: deferred,
                    late: groups[g][0] === "overdue" || root.isLate(entry),
                    dead: groups[g][2] })
       }
@@ -1542,12 +1588,18 @@ readonly property var primaryViews: [
   }
 
   function itemRow(row) {
-    var glyph = gtdTheme.rowGlyph(row)
+    // A task reads the same here as on the calendar: one in its defer window,
+    // or whose window has opened with the deadline still ahead, wears the defer
+    // mark, grey colour and italics the calendar gives work scheduled for a day.
+    var today = String(root.today || root.nowStamp()).slice(0, 10)
+    var deferred = gtdTheme.isDeferred(row)
+      || gtdTheme.scheduledIntoToday(row, today)
     return { kind: "item", id: row.id, title: row.title,
-             meta: root.itemMeta(row), glyph: glyph, raw: row,
-             late: root.isLate(row), archived: root.isArchived(row),
-             dead: row.status === "done" || row.status === "dropped"
-               || row.status === "trashed" }
+              meta: root.itemMeta(row), glyph: gtdTheme.rowGlyph(row, deferred),
+              raw: row, deferred: deferred,
+              late: root.isLate(row), archived: root.isArchived(row),
+              dead: row.status === "done" || row.status === "dropped"
+                || row.status === "trashed" || row.status === "archived" }
   }
 
   // The Today list mixes what is due today with work whose defer window covers
@@ -1555,14 +1607,20 @@ readonly property var primaryViews: [
   // the only stamp worth showing beside it.
   function todayRow(row) {
     var item = root.itemRow(row)
+    // A task in Today because its defer window opened wears the defer mark, in
+    // the same grey and italics the calendar gives work scheduled for a day.
+    var deferred = gtdTheme.isDeferred(row)
+      || gtdTheme.scheduledIntoToday(row, root.today)
+    item.deferred = deferred
+    if (deferred) item.glyph = gtdTheme.rowGlyph(row, true)
     if (!item.meta && row.defer_at) item.meta = root.stamp16(row.defer_at)
     return item
   }
 
   // Bucket rows by the project they belong to: named buckets first,
-  // alphabetical, and the tasks filed nowhere last under "No project". The SQL
-  // orders waiting tasks by the person they wait on, which is the wrong
-  // question once they are on screen — what blocks what is the project.
+  // alphabetical, and the tasks filed nowhere last under "No project". The
+  // flat view order is the wrong question once they are on screen — what
+  // blocks what is the project.
   function byProject(rows) {
     var buckets = []
     var seen = ({})
@@ -1714,7 +1772,7 @@ readonly property var primaryViews: [
     exec(completeProc, [root.cli, "complete", kind, prefix, "--json"])
   }
 
-  // The trailing quick-entry token: /Project/, #context or =who.
+  // The trailing quick-entry token: /Project/ or #context.
   function captureToken(text) {
     var m = String(text || "").match(/(\S*)$/)
     if (!m) return null
@@ -1727,11 +1785,6 @@ readonly property var primaryViews: [
     }
     if (token.charAt(0) === "#")
       return { kind: "context", prefix: token.slice(1).split('"')[0] }
-    if (token.charAt(0) === "=") {
-      var who = token.slice(1)
-      if (who.charAt(0) === '"') return { kind: "waiting", prefix: who.slice(1) }
-      return { kind: "waiting", prefix: who }
-    }
     return null
   }
 
@@ -1943,6 +1996,8 @@ readonly property var primaryViews: [
       else if (name === "open") root.run(["open", id], "opened")
       else if (name === "undo") root.run(["undo", id], "undone")
       else if (name === "undone") root.run(["engage", id, "undone"], "undone")
+      else if (name === "archive") root.run(["engage", id, "archive"], "archived")
+      else if (name === "unarchive") root.run(["engage", id, "unarchive"], "unarchived")
       }
 
     // ---- Drag and drop ------------------------------------------------------
@@ -2118,6 +2173,20 @@ readonly property var primaryViews: [
     root.run(["settings", "set", "theme", name], "theme " + name)
   }
 
+  // The narrowest the full-screen window gets before it asks to be enlarged.
+  // A whole number of pixels; the backend validates it, and the command's exit
+  // reloads the settings read, which is what moves the threshold.
+  function setFullscreenWidthLimit(px) {
+    var n = Number(px)
+    if (isNaN(n) || n <= 0 || n !== Math.floor(n)) {
+      root.status = "width must be a whole number of pixels"
+      return
+    }
+    if (n === root.fullscreenWidthLimit) return
+    root.run(["settings", "set", "fullscreen_width_limit", String(n)],
+             "full-screen width limit " + n + "px")
+  }
+
   // Whether the calendar marks the day a task was finished. A switch in the
   // database, like the deadlines: the command's exit reloads the settings read,
   // so the tick and the green symbols follow on their own.
@@ -2163,17 +2232,29 @@ readonly property var primaryViews: [
     // is a switch in the database like the others, so it goes through
     // `settings set`; the command's exit reloads the settings read, which is
     // what moves the tick.
-   function setDoneRetention(days) {
-     var n = Number(days)
-     if (isNaN(n) || n < 0 || n !== Math.floor(n)) {
-       root.status = "retention must be a whole number of days, or 0"
-       return
-      }
-     if (n === root.doneRetentionDays) return
-     root.run(["settings", "set", "done_retention_days", String(n)],
-              n === 0 ? "keeping completed tasks forever"
-                      : "keeping completed " + n + " days")
-    }
+    function setDoneRetention(days) {
+      var n = Number(days)
+      if (isNaN(n) || n < 0 || n !== Math.floor(n)) {
+        root.status = "retention must be a whole number of days, or 0"
+        return
+       }
+      if (n === root.doneRetentionDays) return
+      root.run(["settings", "set", "done_retention_days", String(n)],
+               n === 0 ? "keeping completed tasks forever"
+                       : "keeping completed " + n + " days")
+     }
+
+    function setArchiveRetention(days) {
+      var n = Number(days)
+      if (isNaN(n) || n < 0 || n !== Math.floor(n)) {
+        root.status = "retention must be a whole number of days, or 0"
+        return
+       }
+      if (n === root.archiveRetentionDays) return
+      root.run(["settings", "set", "archive_retention_days", String(n)],
+               n === 0 ? "keeping archived tasks forever"
+                       : "keeping archived " + n + " days")
+     }
 
   // A file:// URL from a picker -> a plain local path the CLI understands.
   function localPath(url) {
@@ -2742,6 +2823,11 @@ readonly property var primaryViews: [
       else if (t === "o" || t === "O") root.act("open")
       else if (t === "z" || t === "Z") root.act("undo")
       else if (t === "u" || t === "U") root.act("undone")
+      else if (t === "a" || t === "A") {
+        var at = root.selectedItem()
+        if (at && root.isArchived(at)) root.act("unarchive")
+        else root.act("archive")
+      }
       else if (t === "m" || t === "M") root.showSettings()
       else if (t >= "1" && t <= "9") root.pickView(parseInt(t, 10))
     }
@@ -2820,9 +2906,9 @@ readonly property var primaryViews: [
   // ---- Rendering ------------------------------------------------------------
 
   // If the window is too narrow to show the full layout, drop to a compact
-  // message asking to enlarge the window (as requested). 1080 is the chosen
-  // threshold.
-  readonly property bool tooNarrow: width < 768
+  // message asking to enlarge the window. The threshold is the
+  // fullscreen_width_limit setting, 768 by default.
+  readonly property bool tooNarrow: width < root.fullscreenWidthLimit
 
   MouseArea {
     anchors.fill: parent
@@ -2836,7 +2922,8 @@ readonly property var primaryViews: [
     textFormat: Text.PlainText
     horizontalAlignment: Text.AlignHCenter
     verticalAlignment: Text.AlignVCenter
-    text: " OmaGTD — Please enlarge the window to show its content (min 768px width)"
+    text: " OmaGTD — Please enlarge the window to show its content (min "
+          + root.fullscreenWidthLimit + "px width)"
     color: root.dim
     font.family: root.fontFamily
     font.pixelSize: Style.font.body
@@ -2911,7 +2998,7 @@ readonly property var primaryViews: [
         anchors.rightMargin: Style.spacing.sm
         anchors.verticalCenter: parent.verticalCenter
         foreground: root.textColor
-        placeholderText: "Capture…  #context /Project/ <defer >due =who ~repeat *30m"
+        placeholderText: "Capture…  #context /Project/ <defer >due ~repeat *30m"
         text: root.captureValue
         // Clicking or tabbing into the box is the same as arriving from the
         // columns with Up: the header owns the keyboard from here.
@@ -2988,7 +3075,9 @@ readonly property var primaryViews: [
           anchors.top: parent.top
           anchors.left: parent.left
           anchors.right: parent.right
-          spacing: Style.spacing.xs
+          // The only gap this column carries is above the projects/contexts
+          // switcher, so a little more air there reads as a deliberate break.
+          spacing: Style.spacing.md
 
           Column {
             id: primaryButtons
@@ -3071,6 +3160,7 @@ readonly property var primaryViews: [
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: parent.bottom
+          anchors.bottomMargin: Style.spacing.sm
           model: root.treeRows
           clip: true
           spacing: 1
@@ -3169,6 +3259,7 @@ readonly property var primaryViews: [
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: parent.bottom
+          anchors.bottomMargin: Style.spacing.sm
           model: root.contextRows
           clip: true
           spacing: 1
@@ -3282,7 +3373,7 @@ readonly property var primaryViews: [
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
-              text: root.rowCount() + (root.rowCount() === 1 ? " row" : " rows")
+              text: root.rowCount() + (root.rowCount() === 1 ? " task" : " tasks")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -3370,12 +3461,13 @@ readonly property var primaryViews: [
               color: gtdTheme.colorFor(row.modelData.raw, row.modelData.late,
                 row.index === root.rowSelected && root.column === 1
                   ? root.textColor
-                  : (row.modelData.dead ? root.dim : root.textColor))
+                  : (row.modelData.dead ? root.dim : root.textColor),
+                row.modelData.deferred === true)
               font.family: root.fontFamily
               font.pixelSize: row.modelData.kind === "header" ? Style.font.caption : Style.font.body
               font.bold: row.modelData.kind === "header"
               font.strikeout: row.modelData.archived === true
-              font.italic: gtdTheme.isDeferred(row.modelData.raw)
+              font.italic: row.modelData.deferred === true
               text: (row.modelData.kind === "header" ? "" : (row.modelData.glyph || " ") + "  ")
                 + row.modelData.title
             }
@@ -3824,6 +3916,48 @@ readonly property var primaryViews: [
 
               PanelSectionHeader {
                 width: parent.width
+                text: "Window"
+                foreground: root.dim
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: "Below this width the full-screen app drops to a message "
+                      + "asking to enlarge the window, rather than drawing a "
+                      + "cramped layout. A whole number of pixels."
+              }
+
+              Row {
+                width: parent.width
+                spacing: Style.spacing.xs
+
+                TextField {
+                  id: widthLimitField
+                  width: 80
+                  foreground: root.textColor
+                  placeholderText: "px"
+                  text: String(root.fullscreenWidthLimit)
+                  onAccepted: root.setFullscreenWidthLimit(text)
+                }
+
+                Text {
+                  anchors.verticalCenter: parent.verticalCenter
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: "px (768 by default)"
+                }
+              }
+
+              PanelSectionHeader {
+                width: parent.width
                 text: "Bar pill (hideZeroCounts)"
                 foreground: root.dim
                 fontFamily: root.fontFamily
@@ -4102,6 +4236,47 @@ readonly property var primaryViews: [
                   }
                 }
 
+                PanelSectionHeader {
+                  width: parent.width
+                  text: "Archived tasks kept"
+                  foreground: root.dim
+                  fontFamily: root.fontFamily
+                  }
+
+                Text {
+                  width: parent.width
+                  textFormat: Text.PlainText
+                  wrapMode: Text.WordWrap
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  text: "An archived task stays this many days, then clears. "
+                         + "0 keeps it forever."
+                  }
+
+                Row {
+                  width: parent.width
+                  spacing: Style.spacing.xs
+
+                  TextField {
+                    id: archiveRetentionField
+                    width: 80
+                    foreground: root.textColor
+                    placeholderText: "days"
+                    text: root.archiveRetentionDays > 0 ? String(root.archiveRetentionDays) : ""
+                    onAccepted: root.setArchiveRetention(text)
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    textFormat: Text.PlainText
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    text: "days (0 = forever)"
+                  }
+                }
+
                PanelSectionHeader {
                  width: parent.width
                  text: "Calendar"
@@ -4349,19 +4524,31 @@ readonly property var primaryViews: [
                  fontFamily: root.fontFamily
                 }
 
-               Row {
-                 spacing: Style.spacing.xs
+                Row {
+                  spacing: Style.spacing.xs
 
-                 Button {
-                   text: "view log"
-                   bordered: true
-                   fontFamily: root.fontFamily
-                   fontSize: Style.font.caption
-                   foreground: root.textColor
-                   onClicked: {
-                     root.settingsOpen = false
-                     root.pickViewByKey("log")
-                    }
+                  Button {
+                    text: "archive"
+                    bordered: true
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    foreground: root.textColor
+                    onClicked: {
+                      root.settingsOpen = false
+                      root.pickViewByKey("archived")
+                     }
+                  }
+
+                  Button {
+                    text: "view log"
+                    bordered: true
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    foreground: root.textColor
+                    onClicked: {
+                      root.settingsOpen = false
+                      root.pickViewByKey("log")
+                     }
                   }
 
                  Button {
@@ -5171,6 +5358,21 @@ Row {
                   }
 
                   Button {
+                    text: root.isArchived(root.selectedItem()
+                      && root.selectedItem().raw) ? "unarchive" : "archive"
+                    bordered: true
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    foreground: root.textColor
+                    enabled: !root.busy
+                    onClicked: {
+                      var at = root.selectedItem()
+                      if (at && root.isArchived(at.raw)) root.act("unarchive")
+                      else root.act("archive")
+                    }
+                  }
+
+                  Button {
                     text: "flag"
                     bordered: true
                     fontFamily: root.fontFamily
@@ -5211,7 +5413,7 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.status !== "" ? root.status
-          : "← → column  ↑↓ move  tab row/view  enter pick/save  c capture  d done  f flag  w wait  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  esc close"
+          : "← → column  ↑↓ move  tab row/view  enter pick/save  c capture  d done  a archive  f flag  w wait  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  esc close"
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

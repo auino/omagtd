@@ -137,7 +137,7 @@ def due_reviews(store: Store) -> dict:
     containers = store.query(
         "SELECT id, title, kind, review, reviewed_at, completed FROM items "
         "WHERE kind IN ('project', 'area') AND review <> 'never' "
-        "AND status NOT IN ('trashed', 'done', 'dropped') "
+        "AND status NOT IN ('trashed', 'done', 'dropped', 'archived') "
         "ORDER BY kind, title COLLATE NOCASE")
     for row in containers:
         scopes.append(_scope(store, row["id"], row["title"], row["review"],
@@ -161,12 +161,13 @@ def _scope(store: Store, scope_id: str, title: str, cadence: str, reviewed_at,
     if kind == "context":
         rows = store.query(
             "SELECT i.* FROM item_tags it JOIN items i ON i.id = it.item_id "
-            "WHERE it.tag_id = ? AND i.status NOT IN ('trashed', 'done', 'dropped')",
+            "WHERE it.tag_id = ? AND i.status NOT IN ('trashed', 'done', 'dropped', "
+            "'archived')",
             (scope_id,))
     else:
         rows = store.query(
             "SELECT * FROM item_titles WHERE (parent_id = ? OR id = ?) "
-            "AND status NOT IN ('trashed', 'done', 'dropped')",
+            "AND status NOT IN ('trashed', 'done', 'dropped', 'archived')",
             (scope_id, scope_id))
 
     stamp = dates.parse_stamp(reviewed_at)

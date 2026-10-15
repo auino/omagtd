@@ -38,15 +38,16 @@ CREATE TABLE IF NOT EXISTS items (
   -- inbox     captured, not yet clarified
   -- active    organized and available
   -- onhold    a container paused on purpose
-  -- waiting   delegated to someone, tracked in waiting_for
+  -- waiting   parked until someone else moves it
   -- someday   incubated deliberately
   -- reference worth keeping, not worth doing (OmniFocus's Reference folder)
   -- done      completed (action) or completed (project/area)
   -- dropped   consciously abandoned
+  -- archived  put away — out of every list, kept until its retention passes
   -- trashed   deleted; prev_status remembers where to restore it
   status       TEXT    NOT NULL CHECK (status IN
                  ('inbox', 'active', 'onhold', 'waiting', 'someday',
-                  'reference', 'done', 'dropped', 'trashed')),
+                  'reference', 'done', 'dropped', 'archived', 'trashed')),
   prev_status  TEXT,
 
   -- 0 none, 1 flagged. OmniFocus had three levels; only the boolean ever
@@ -65,13 +66,11 @@ CREATE TABLE IF NOT EXISTS items (
   started_at   TEXT,
   completed_at TEXT,
   dropped_at   TEXT,
+  archived_at  TEXT,
 
   -- When the deadline notification was last shown, so it fires once per
   -- deadline instead of every poll.
   notified_at  TEXT,
-
-  -- Delegation: who it is waiting on.
-  waiting_for  TEXT,
 
   -- Recurrence rule, JSON: {"interval": 2, "unit": "week", "from": "complete"}.
   -- `from` is "complete" (repeat N units after you finish) or "schedule"
@@ -109,6 +108,8 @@ CREATE INDEX IF NOT EXISTS idx_items_review   ON items(review, reviewed_at);
 -- updated time; both were full scans of items before.
 CREATE INDEX IF NOT EXISTS idx_items_completed ON items(completed_at);
 CREATE INDEX IF NOT EXISTS idx_items_updated   ON items(status, updated_at);
+-- The archive sweep cuts on the day an item was archived.
+CREATE INDEX IF NOT EXISTS idx_items_archived  ON items(archived_at);
 
 -- Contexts. OmniFocus calls these tags and GTD calls them contexts; they are
 -- the same thing — where an action can be done (@errands, @computer, @home).
@@ -194,7 +195,7 @@ CREATE INDEX IF NOT EXISTS idx_undo_item_item ON undo_item(item_id);
 -- Everything that is not gone. The starting set for every workflow step.
 CREATE VIEW IF NOT EXISTS open_items AS
 SELECT * FROM items
-WHERE status NOT IN ('done', 'dropped', 'trashed');
+WHERE status NOT IN ('done', 'dropped', 'archived', 'trashed');
 
 -- GTD step 1 — the inbox is "mind is clear" or it is not.
 CREATE VIEW IF NOT EXISTS inbox AS
@@ -297,7 +298,7 @@ ORDER BY defer_at, priority DESC;
 CREATE VIEW IF NOT EXISTS waiting_for AS
 SELECT * FROM open_items
 WHERE status = 'waiting'
-ORDER BY COALESCE(NULLIF(waiting_for, ''), '~') ASC, defer_at;
+ORDER BY defer_at, created_at;
 
 CREATE VIEW IF NOT EXISTS someday AS
 SELECT * FROM open_items
@@ -317,6 +318,11 @@ SELECT * FROM open_items WHERE kind = 'area';
 
 CREATE VIEW IF NOT EXISTS completed_items AS
 SELECT * FROM items WHERE status = 'done' ORDER BY completed_at;
+
+-- Put away on purpose. Kept apart from the trash: the archive is a record of
+-- work you chose to set aside, and the retention setting decides when it goes.
+CREATE VIEW IF NOT EXISTS archived_items AS
+SELECT * FROM items WHERE status = 'archived' ORDER BY archived_at DESC;
 
 -- Containers with actions in them but nothing you could do: the classic
 -- "stalled project" the weekly review hunts for.
@@ -355,6 +361,6 @@ SELECT t.id, t.name, t.parent_id, t.review, t.reviewed_at,
        (SELECT COUNT(*) FROM item_tags it
          JOIN items i ON i.id = it.item_id
         WHERE it.tag_id = t.id AND i.kind = 'action'
-          AND i.status NOT IN ('done', 'dropped', 'trashed')
+          AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
        ) AS open_count
 FROM tags t;

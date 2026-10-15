@@ -3,7 +3,7 @@
 Getting Things Done for [Omarchy](https://omarchy.org/), modelled on OmniFocus.
 A keyboard-driven GTD system that lives in the bar and the shell: capture into
 an inbox, clarify, organize, reflect, and engage — projects/areas, contexts
-(tags), waiting-for, someday/maybe, recurring actions, and an internal
+(tags), waiting, someday/maybe, recurring actions, and an internal
 calendar, backed by a sqlite3 database and scriptable through a `gtd` CLI.
 
 ## Human-generated content
@@ -85,13 +85,25 @@ python3 ~/.config/omarchy/plugins/com.auino.omagtd/lib/gtd/cli.py --help
 Common verbs: `capture` (inbox), `clarify`/`triage`, `edit`, `defer`,
 `postpone`/`roll`, `open` (open an item's link), `today`, `focus`, `engage`,
 `review`, `tag`/`context`, `tree`, `calendar`/`cal`, `agenda`, `settings`,
-`import`, `export`, `db`.
+`import`, `export`, `export-day`, `db`.
 
 An OmniFocus `import` reads any of its exports — a `.ofocus` document (the
 folder of zipped transaction files OmniFocus writes for *File ▸ Export*),
 a `.ofxml` backup, or the line-oriented `.ofocusmx` text — plus our own
 `json`, `csv` and `zip`. The format is chosen by content unless `--format`
 says otherwise.
+
+`export day` writes the commitments of a single day — overdue, due, scheduled
+and completed, with the moment the export was taken — to a file in markdown,
+JSON, YAML or PDF. The day, the format and the destination are all arguments;
+the format is taken from the file's suffix unless `--format` says otherwise,
+and with no destination the text formats go to standard out:
+
+```bash
+gtd export-day                         # today, markdown, to stdout
+gtd export-day +3d --format pdf -o week.pdf
+gtd export-day 2026-10-05 -o plan.yaml  # the suffix picks YAML
+```
 
 An OmniFocus `import` stamps every imported task with a dated context,
 `omnifocus_import_<yyyymmdd>`, so a batch can be found and reviewed together.

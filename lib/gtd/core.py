@@ -4,7 +4,7 @@ Five functions, in GTD order, each one a step of the discipline:
 
     capture()   1 — get it out of your head
     clarify()   2 — decide what it actually is
-    organize()  3 — next action, context, project, date, waiting-for
+    organize()  3 — next action, context, project, date, flags
     (review)    4 — see the whole system; lives in :mod:`gtd.review`
     engage()    5 — do the next thing, or consciously not
 
@@ -39,7 +39,8 @@ LIVE_SQL = "('inbox', 'active', 'waiting', 'onhold', 'someday', 'reference')"
 CLARIFY_OUTCOMES = ("actionable", "do-now", "defer", "wait", "someday",
                     "reference", "delete")
 ENGAGE_ACTIONS = ("start", "stop", "done", "undone", "drop", "wait", "resume",
-                  "defer", "flag", "unflag", "inbox", "trash")
+                  "defer", "flag", "unflag", "inbox", "archive", "unarchive",
+                  "trash")
 REVIEW_INTERVALS = ("daily", "weekly", "monthly", "quarterly", "yearly", "never")
 
 
@@ -136,7 +137,7 @@ def find(store: Store, ref: str, *, kind: str | None = None) -> dict:
     params: list = []
 
     if ref in ("last", "@last", "-", "-1"):
-        sql = "SELECT * FROM items WHERE status <> 'trashed'"
+        sql = "SELECT * FROM items WHERE status NOT IN ('archived', 'trashed')"
         if kind:
             sql += " AND kind = ?"
             params.append(kind)
@@ -145,10 +146,9 @@ def find(store: Store, ref: str, *, kind: str | None = None) -> dict:
         if row is None:
             raise GtdError("nothing captured yet")
         return as_dict(row)
-
     if ref.startswith("-") and ref[1:].isdigit():
         offset = max(0, int(ref[1:]) - 1)
-        sql = "SELECT * FROM items WHERE status <> 'trashed'"
+        sql = "SELECT * FROM items WHERE status NOT IN ('archived', 'trashed')"
         params = []
         if kind:
             sql += " AND kind = ?"
@@ -183,7 +183,7 @@ def find(store: Store, ref: str, *, kind: str | None = None) -> dict:
     # name collision because "Home admin" is meant to be the area, not some
     # action that happens to be called the same thing.
     sql = ("SELECT id, kind FROM items WHERE lower(title) = lower(?) "
-           "AND status <> 'trashed'")
+           "AND status NOT IN ('archived', 'trashed')")
     args: list = [ref]
     if kind:
         sql += " AND kind = ?"
@@ -213,8 +213,8 @@ def get(store: Store, item_id: str) -> dict:
     item["children"] = [
         as_dict(r) for r in store.query(
             "SELECT id, title, status, priority, defer_at, due_at, repeat, "
-            "waiting_for, completed, completed_at FROM items "
-            "WHERE parent_id = ? AND status <> 'trashed' "
+            "completed, completed_at FROM items "
+            "WHERE parent_id = ? AND status NOT IN ('archived', 'trashed') "
             "ORDER BY completed, rank, created_at", (item_id,))
     ]
     item["open_children"] = sum(1 for c in item["children"] if c["status"] in LIVE_STATUSES)
@@ -264,7 +264,7 @@ def container_names(store: Store) -> dict[str, str]:
 
 # What each autocomplete kind draws its candidates from. Projects and areas
 # share one namespace in quick entry, so they share one candidate list here.
-COMPLETION_KINDS = ("project", "context", "waiting", "date", "defer")
+COMPLETION_KINDS = ("project", "context", "date", "defer")
 
 
 def complete_name(store: Store, kind: str, prefix: str) -> str | None:
@@ -289,15 +289,11 @@ def complete_name(store: Store, kind: str, prefix: str) -> str | None:
     if kind == "project":
         candidates = [row["title"] for row in store.query(
             "SELECT title FROM items WHERE kind IN ('project', 'area') "
-            "AND status NOT IN ('trashed', 'done') ORDER BY title COLLATE NOCASE")]
-    elif kind == "context":
+            "AND status NOT IN ('trashed', 'done', 'archived') "
+            "ORDER BY title COLLATE NOCASE")]
+    else:
         candidates = [row["name"] for row in store.query(
             "SELECT name FROM tags ORDER BY name COLLATE NOCASE")]
-    else:
-        candidates = [row["waiting_for"] for row in store.query(
-            "SELECT DISTINCT waiting_for FROM items "
-            "WHERE waiting_for IS NOT NULL AND waiting_for <> '' "
-            "AND status <> 'trashed' ORDER BY waiting_for COLLATE NOCASE")]
 
     for name in candidates:
         if name.lower() == text.lower():
@@ -921,7 +917,7 @@ def normalize_inbox(store: Store, item_id: str) -> None:
 
 def capture(store: Store, text: str | None = None, *, title=None, notes: str = "",
             project=None, area=None, tags=(), priority=None, defer=None, due=None,
-            duration=None, waiting_for=None, repeat=None, review=None,
+            duration=None, repeat=None, review=None,
             url=None, attach=(), to_inbox: bool = False, parse_text: bool = True) -> dict:
     """Put something into the system, unthought-through.
 
@@ -939,7 +935,6 @@ def capture(store: Store, text: str | None = None, *, title=None, notes: str = "
         defer = defer if defer is not None else parsed["defer"]
         due = due if due is not None else parsed["due"]
         duration = duration if duration is not None else parsed.get("duration")
-        waiting_for = waiting_for or parsed["waiting_for"]
         repeat = repeat if repeat is not None else parsed["repeat"]
         project = project or parsed["project"]
         area = area or parsed["area"]
@@ -952,9 +947,7 @@ def capture(store: Store, text: str | None = None, *, title=None, notes: str = "
 
     parent = None if to_inbox else resolve_parent(store, project, area)
 
-    if waiting_for:
-        status = "waiting"
-    elif parent is not None:
+    if parent is not None:
         status = "active"
     else:
         status = "inbox"
@@ -966,14 +959,13 @@ def capture(store: Store, text: str | None = None, *, title=None, notes: str = "
     _undo_snapshot_item(store, item_id)   # records "did not exist" for undo
     store.run(
         "INSERT INTO items(id, kind, title, notes, url, parent_id, status, priority, "
-        "defer_at, due_at, duration, waiting_for, repeat, review, rank, "
+        "defer_at, due_at, duration, repeat, review, rank, "
         "created_at, updated_at) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (item_id, ACTION, title, (notes or "").strip(),
          (url or "").strip() or None,
          parent["id"] if parent else None, status, _priority(priority),
          defer_at, due_at, _minutes(duration),
-         (waiting_for or "").strip() or None,
          _encode_repeat(repeat),
          review if review in REVIEW_INTERVALS else "never",
          _rank_next(store, parent["id"] if parent else None), stamp, stamp))
@@ -991,7 +983,7 @@ def capture(store: Store, text: str | None = None, *, title=None, notes: str = "
 
 
 def clarify(store: Store, ref: str, outcome: str, *, project=None, area=None,
-            notes=None, defer=None, due=None, waiting_for=None, priority=None,
+            notes=None, defer=None, due=None, priority=None,
             tags=(), review=None) -> dict:
     """Decide what an inbox item is. This is the step people skip.
 
@@ -999,7 +991,7 @@ def clarify(store: Store, ref: str, outcome: str, *, project=None, area=None,
       actionable  a real next action — give it a project and it is organized
       do-now      it takes two minutes — done immediately (GTD's 2-minute rule)
       defer       real, but not now — give it a defer date
-      wait        not yours to do — record who owes it
+      wait        not yours to do — park it until someone else does
       someday     a maybe — incubate it, revisit at review
       reference   worth keeping, not worth doing
       delete      no. the trash takes it
@@ -1009,7 +1001,7 @@ def clarify(store: Store, ref: str, outcome: str, *, project=None, area=None,
         raise GtdError(f"clarify outcome must be one of: {', '.join(CLARIFY_OUTCOMES)}")
 
     item = find(store, ref, kind=ACTION)
-    if item["status"] in ("done", "dropped"):
+    if item["status"] in ("done", "dropped", "archived"):
         raise GtdError(f"{item['id']} is already {item['status']}")
 
     if outcome == "delete":
@@ -1029,17 +1021,11 @@ def clarify(store: Store, ref: str, outcome: str, *, project=None, area=None,
         fields["review"] = review
 
     if outcome == "wait":
-        who = str(waiting_for or "").strip()
-        if not who:
-            raise GtdError("say who you are waiting for")
-        fields["waiting_for"] = who
         fields["status"] = "waiting"
     elif outcome == "someday":
         fields["status"] = "someday"
-        fields["waiting_for"] = None
     elif outcome == "reference":
         fields["status"] = "reference"
-        fields["waiting_for"] = None
     elif outcome in ("actionable", "defer"):
         # Leaving the inbox means it has to have a home: a project, an area,
         # or at least a context. Refusing here is deliberate: an "organized"
@@ -1054,7 +1040,6 @@ def clarify(store: Store, ref: str, outcome: str, *, project=None, area=None,
             fields["parent_id"] = parent["id"]
             fields["rank"] = _rank_next(store, parent["id"])
         fields["status"] = "active"
-        fields["waiting_for"] = None
         if outcome == "defer" and defer is None:
             raise GtdError("a deferred action needs a defer date — pass --defer")
 
@@ -1086,8 +1071,7 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
              priority=None, notes=None, url=None, clear_url=False,
              attach=(), unattach=(),
              review=None, repeat=None, clear_repeat=False,
-             waiting_for=None, inbox=False,
-             onhold=None, rank=None, title=None) -> dict:
+             inbox=False, onhold=None, rank=None, title=None) -> dict:
     """Give an item its home, context, timing and flags."""
     item = find(store, ref)
     fields: dict = {}
@@ -1101,7 +1085,6 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
     if inbox:
         fields["status"] = "inbox"
         fields["parent_id"] = None
-        fields["waiting_for"] = None
     elif onhold:
         # Truthiness, not `is not None`: the CLI's --onhold defaults to False,
         # and testing for None made that default swallow every --project and
@@ -1161,13 +1144,6 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
         fields["repeat"] = None
     if rank is not None:
         fields["rank"] = int(rank)
-    if waiting_for is not None:
-        who = str(waiting_for).strip()
-        fields["waiting_for"] = who or None
-        if who:
-            fields["status"] = "waiting"
-        elif item["status"] == "waiting":
-            fields["status"] = "active" if item["parent_id"] else "inbox"
 
     # Contexts count as a change in their own right: adding or removing one
     # touches only item_tags, so `fields` stays empty and a guard that looked
@@ -1188,7 +1164,7 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
         store.log(fields["parent_id"], "add-action", item["title"])
         _refresh_container(store, old_parent)
         _refresh_container(store, fields["parent_id"])
-    if not (inbox or onhold or waiting_for):
+    if not (inbox or onhold):
         normalize_inbox(store, item["id"])
     return get(store, item["id"])
 
@@ -1197,7 +1173,7 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
 
 
 def engage(store: Store, ref: str, action: str, *, when=None, priority=None,
-           waiting_for=None, notes=None, project=None, area=None, defer=None,
+           notes=None, project=None, area=None, defer=None,
            due=None, tags=()) -> dict:
     """Do something about an item, or consciously decline to."""
     action = str(action or "").strip().lower()
@@ -1229,22 +1205,25 @@ def engage(store: Store, ref: str, action: str, *, when=None, priority=None,
         return get(store, item["id"])
 
     if action == "drop":
-        _update(store, item["id"], status="dropped", dropped_at=now(), waiting_for=None)
+        _update(store, item["id"], status="dropped", dropped_at=now())
         store.log(item["id"], "drop", item["title"])
         _refresh_container(store, item["parent_id"])
         return get(store, item["id"])
 
+    if action == "archive":
+        return archive(store, item["id"])
+
+    if action == "unarchive":
+        return unarchive(store, item["id"])
+
     if action == "wait":
-        # Waiting is a decision, not a name: `--who` records who owes it when
-        # there is someone, and leaving it off still parks the task the same
-        # way, so the app's waiting switch has something to flip either way.
-        who = str(waiting_for or item.get("waiting_for") or "").strip()
-        _update(store, item["id"], status="waiting", waiting_for=who or None)
-        store.log(item["id"], "wait", who or item["title"])
+        # Waiting is a decision: park the task until someone else moves it.
+        _update(store, item["id"], status="waiting")
+        store.log(item["id"], "wait", item["title"])
         return get(store, item["id"])
 
     if action == "resume":
-        _update(store, item["id"], status="active", waiting_for=None)
+        _update(store, item["id"], status="active")
         store.log(item["id"], "resume", item["title"])
         return get(store, item["id"])
 
@@ -1278,7 +1257,7 @@ def engage(store: Store, ref: str, action: str, *, when=None, priority=None,
 
     # inbox — send it back to the clarify queue. The inbox is "no project and
     # no context", so this drops both; otherwise it would not really be there.
-    _update(store, item["id"], status="inbox", parent_id=None, waiting_for=None)
+    _update(store, item["id"], status="inbox", parent_id=None)
     store.run("DELETE FROM item_tags WHERE item_id = ?", (item["id"],))
     store.log(item["id"], "inbox", item["title"])
     _refresh_container(store, item["parent_id"])
@@ -1409,15 +1388,14 @@ def create_child(store: Store, parent_id: str | None, title: str, **fields) -> d
     _undo_snapshot_item(store, item_id)
     store.run(
         "INSERT INTO items(id, kind, title, notes, parent_id, status, priority, "
-        "defer_at, due_at, duration, waiting_for, repeat, review, rank, "
+        "defer_at, due_at, duration, repeat, review, rank, "
         "created_at, updated_at) "
-        "VALUES(?, 'action', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES(?, 'action', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (item_id, title, (fields.get("notes") or "").strip(),
          parent["id"] if parent else None, status,
          _priority(fields.get("priority")),
          _field(fields.get("defer")), _field(fields.get("due")),
          _minutes(fields.get("duration")),
-         (fields.get("waiting_for") or "").strip() or None,
          _encode_repeat(fields.get("repeat")),
          fields.get("review") if fields.get("review") in REVIEW_INTERVALS else "never",
          _rank_next(store, parent["id"] if parent else None), stamp, stamp))
@@ -1488,7 +1466,7 @@ def _refresh_container(store: Store, container_id: str | None) -> None:
     else:
         pending = store.scalar(
             "SELECT COUNT(*) FROM items WHERE parent_id = ? AND kind = 'project' "
-            "AND completed = 0 AND status NOT IN ('trashed', 'done', 'dropped')",
+            "AND completed = 0 AND status NOT IN ('trashed', 'done', 'dropped', 'archived')",
             (container_id,))
 
     completed = 1 if not pending else 0
@@ -1510,17 +1488,14 @@ def set_status(store: Store, ref: str, status: str) -> dict:
     item = find(store, ref)
     status = str(status).strip().lower()
     valid = ("active", "onhold", "waiting", "someday", "reference", "inbox",
-             "done", "dropped")
+             "done", "dropped", "archived")
     if status not in valid:
         raise GtdError(f"status must be one of: {', '.join(valid)}")
     if status == "done":
         return complete(store, item["id"])
-    if status == "waiting" and not item.get("waiting_for"):
-        raise GtdError("say who you are waiting for")
-    fields = {"status": status}
-    if status != "waiting":
-        fields["waiting_for"] = None
-    _update(store, item["id"], **fields)
+    if status == "archived":
+        return archive(store, item["id"])
+    _update(store, item["id"], status=status)
     store.log(item["id"], "status", status)
     _refresh_container(store, item["parent_id"])
     return get(store, item["id"])
@@ -1595,6 +1570,65 @@ def sweep_done(store: Store) -> list[str]:
      ids = [r["id"] for r in store.query(
           "SELECT id FROM items WHERE status = 'done' AND "
           "completed_at < ?", (cutoff,))]
+     uris = attachment_uris(store, ids)
+     for item_id in ids:
+         store.log(None, "purge", item_id)
+         store.run("DELETE FROM items WHERE id = ?", (item_id,))
+     discard_attachments(store, uris)
+     return ids
+
+
+# --------------------------------------------------------------- archive
+
+
+def archive(store: Store, ref: str) -> dict:
+    """Put an item away, out of every list but still on record.
+
+    Archiving is not deleting: the item leaves the open lists, the way a
+    completed one does, but stays readable and can be brought back with
+    `unarchive`. Where to return it to is remembered in `prev_status`, the same
+    way the trash remembers where a deleted item came from.
+    """
+    item = find(store, ref)
+    if item["status"] == "archived":
+        return get(store, item["id"])
+    _update(store, item["id"], status="archived", prev_status=item["status"],
+            archived_at=now())
+    store.log(item["id"], "archive", item["title"])
+    _refresh_container(store, item["parent_id"])
+    return get(store, item["id"])
+
+
+def unarchive(store: Store, ref: str) -> dict:
+    """Bring an archived item back to the state it was put away from."""
+    item = find(store, ref)
+    if item["status"] != "archived":
+        raise GtdError(f"{item['id']} is not archived")
+    back = item.get("prev_status") or ("active" if item["parent_id"] else "inbox")
+    if back in ("archived", "trashed"):
+        back = "inbox"
+    _update(store, item["id"], status=back, prev_status=None, archived_at=None)
+    store.log(item["id"], "unarchive", back)
+    _refresh_container(store, item["parent_id"])
+    return get(store, item["id"])
+
+
+def sweep_archived(store: Store) -> list[str]:
+     """Delete archived tasks that have aged past the retention setting.
+
+     Reads `archive_retention_days`: 0 keeps archived tasks forever, which is
+     the default, and any positive number keeps them that many days from the
+     day they were archived. Called on every command, after `sweep_done`, so
+     the archive prunes itself on the same terms as the trash and the completed
+     list.
+     """
+     days = _archive_retention_days(store)
+     if days <= 0:
+         return []
+     cutoff = (_dt.datetime.now() - _dt.timedelta(days=days)).strftime(STAMP)
+     ids = [r["id"] for r in store.query(
+          "SELECT id FROM items WHERE status = 'archived' AND "
+          "COALESCE(archived_at, updated_at) < ?", (cutoff,))]
      uris = attachment_uris(store, ids)
      for item_id in ids:
          store.log(None, "purge", item_id)
@@ -1934,12 +1968,26 @@ def _undo_order(store: Store, payloads):
     return ordered
 
 
+def _undo_live_columns(store: Store) -> set[str]:
+    """The columns the items table has right now.
+
+    An undo entry was snapshot against whatever schema was live then; a column
+    dropped or added since (the `waiting_for` field is the case that motivated
+    this) must not be written back, or the restore hits a column the table no
+    longer has and the whole undo fails.
+    """
+    return {row["name"] for row in store.query("PRAGMA table_info(items)")}
+
+
 def _undo_restore_row(store: Store, item_id: str, before: dict) -> str:
     columns = [key for key in before if key != "id"]
+    live = _undo_live_columns(store)
+    columns = [c for c in columns if c in live]
     sets = ", ".join(f"{name} = ?" for name in columns)
     values = [before[name] for name in columns]
     if store.one("SELECT id FROM items WHERE id = ?", (item_id,)):
-        store.run(f"UPDATE items SET {sets} WHERE id = ?", (*values, item_id))
+        if sets:
+            store.run(f"UPDATE items SET {sets} WHERE id = ?", (*values, item_id))
     else:
         names = ", ".join(columns)
         placeholders = ", ".join("?" for _ in columns)
@@ -1967,7 +2015,7 @@ def _undo_refresh_flag(store: Store, node_id: str | None) -> None:
     else:
         pending = store.scalar(
             "SELECT COUNT(*) FROM items WHERE parent_id = ? AND kind = 'project' "
-            "AND completed = 0 AND status NOT IN ('trashed', 'done', 'dropped')",
+            "AND completed = 0 AND status NOT IN ('trashed', 'done', 'dropped', 'archived')",
             (node_id,))
     completed = 1 if not pending else 0
     if completed != (node["completed"] or 0):
@@ -1990,7 +2038,8 @@ def mark_reviewed(store: Store, ref: str | None = None, *, tag: str | None = Non
             raise GtdError(f"no context called {tag!r}")
         ids = [r["id"] for r in store.query(
             "SELECT i.id FROM item_tags it JOIN items i ON i.id = it.item_id "
-            "WHERE it.tag_id = ? AND i.status NOT IN ('trashed', 'done', 'dropped')",
+            "WHERE it.tag_id = ? AND i.status NOT IN ('trashed', 'done', 'dropped', "
+            "'archived')",
             (row["id"],))]
         for item_id in ids:
             store.run("UPDATE items SET reviewed_at = ?, updated_at = ? WHERE id = ?",
@@ -2001,7 +2050,7 @@ def mark_reviewed(store: Store, ref: str | None = None, *, tag: str | None = Non
         return {"scope": f"#{row['name']}", "marked": len(ids)}
 
     if all_scopes:
-        rows = store.query("SELECT id FROM items WHERE status <> 'trashed'")
+        rows = store.query("SELECT id FROM items WHERE status NOT IN ('archived', 'trashed')")
         for row in rows:
             store.run("UPDATE items SET reviewed_at = ? WHERE id = ?", (stamp, row["id"]))
         store.run("UPDATE tags SET reviewed_at = ?", (stamp,))
@@ -2012,8 +2061,8 @@ def mark_reviewed(store: Store, ref: str | None = None, *, tag: str | None = Non
         raise GtdError("mark needs a container id, --tag or --all")
     item = find(store, ref)
     ids = [r["id"] for r in store.query(
-        "SELECT id FROM items WHERE status NOT IN ('trashed', 'done', 'dropped') "
-        "AND (parent_id = ? OR id = ?)", (item["id"], item["id"]))]
+        "SELECT id FROM items WHERE status NOT IN ('trashed', 'done', 'dropped', "
+        "'archived') AND (parent_id = ? OR id = ?)", (item["id"], item["id"]))]
     for item_id in ids:
         store.run("UPDATE items SET reviewed_at = ? WHERE id = ?", (stamp, item_id))
     if item["review"] != "never":
@@ -2051,9 +2100,13 @@ VIEW_SQL = {
     "onhold": "FROM item_titles t WHERE t.status = 'onhold' ORDER BY t.title COLLATE NOCASE",
     "trash": "FROM item_titles t WHERE t.status = 'trashed' ORDER BY t.updated_at DESC",
     "done": "FROM item_titles t WHERE t.status = 'done' ORDER BY t.completed_at DESC",
-    "projects": "FROM item_titles t WHERE t.kind = 'project' AND t.status <> 'trashed' "
+    "archived": "FROM item_titles t WHERE t.status = 'archived' "
+                "ORDER BY t.archived_at DESC",
+    "projects": "FROM item_titles t WHERE t.kind = 'project' "
+                "AND t.status NOT IN ('archived', 'trashed') "
                 "ORDER BY t.completed, COALESCE(t.parent_title, '~'), t.title COLLATE NOCASE",
-    "areas": "FROM item_titles t WHERE t.kind = 'area' AND t.status <> 'trashed' "
+    "areas": "FROM item_titles t WHERE t.kind = 'area' "
+             "AND t.status NOT IN ('archived', 'trashed') "
              "ORDER BY t.completed, t.title COLLATE NOCASE",
     "stalled": "FROM item_titles t WHERE t.id IN (SELECT id FROM stalled_projects)",
     "empty": "FROM item_titles t WHERE t.id IN (SELECT id FROM empty_projects)",
@@ -2061,7 +2114,7 @@ VIEW_SQL = {
     # `--tag`/`--project` this answers "what is filed under X?"
     # across the whole database rather than inside a single view.
     "tasks": "FROM item_titles t WHERE t.kind = 'action' "
-             "AND t.status NOT IN ('done', 'dropped', 'trashed') "
+             "AND t.status NOT IN ('done', 'dropped', 'archived', 'trashed') "
              "ORDER BY COALESCE(t.due_at, '9999'), t.priority DESC, "
              "t.title COLLATE NOCASE",
 }
@@ -2188,7 +2241,7 @@ def list_view(store: Store, view: str, *, limit: int | None = None, offset: int 
                      "WHERE c.kind = 'project') "
                      "SELECT d.root_id FROM descendants d JOIN items a "
                      "ON a.parent_id = d.node_id WHERE a.kind = 'action' "
-                     "AND a.status NOT IN ('done', 'dropped', 'trashed'))")
+                     "AND a.status NOT IN ('done', 'dropped', 'archived', 'trashed'))")
         filters, cutoffs = prune_where(store)
         if filters["projects"]:
             extra.append(filters["projects"])
@@ -2243,21 +2296,22 @@ def search(store: Store, query: str, *, limit: int | None = 50, offset: int = 0)
         "   OR t.notes LIKE ? COLLATE NOCASE "
         "   OR t.parent_title LIKE ? COLLATE NOCASE "
         "   OR t.area_title LIKE ? COLLATE NOCASE "
-        "   OR t.waiting_for LIKE ? COLLATE NOCASE "
         "   OR t.url LIKE ? COLLATE NOCASE "
         "   OR g.name LIKE ? COLLATE NOCASE "
         "   OR a.uri LIKE ? COLLATE NOCASE "
         # Archived items come after everything still to be done, since that is
         # the only reason they turn up here at all; among themselves the most
         # recently archived is the one you are most likely looking for.
-        "ORDER BY CASE WHEN t.status = 'done' THEN 1 ELSE 0 END, "
+        "ORDER BY CASE WHEN t.status IN ('done', 'archived') THEN 1 ELSE 0 END, "
         "   CASE t.status "
-        "   WHEN 'inbox' THEN 0 WHEN 'active' THEN 1 WHEN 'waiting' THEN 2 ELSE 3 END, "
+        "   WHEN 'inbox' THEN 0 WHEN 'active' THEN 1 WHEN 'waiting' THEN 2 "
+        "   WHEN 'done' THEN 4 WHEN 'archived' THEN 5 ELSE 3 END, "
         "   t.priority DESC, COALESCE(t.due_at, '9999') ASC, "
-        "   CASE WHEN t.status = 'done' THEN t.completed_at END DESC, "
+        "   CASE WHEN t.status = 'done' THEN t.completed_at "
+        "        WHEN t.status = 'archived' THEN t.archived_at END DESC, "
         "   t.title COLLATE NOCASE"
         + clause,
-        (like, like, like, like, like, like, like, like) + page_params)
+        (like, like, like, like, like, like, like) + page_params)
     out = [as_dict(r) for r in rows]
     if out:
         tag_map = repository.tags_for(store, [item["id"] for item in out])
@@ -2279,6 +2333,10 @@ SETTING_DEFAULTS = {
       # How many days a completed task is kept before it is swept away. "0"
       # means keep it forever; any positive number keeps it that many days.
       "done_retention_days": "30",
+      # How many days an archived task is kept before it is swept away, counted
+      # from the day it was archived. The default 0 keeps archived tasks until
+      # you decide otherwise, since the archive is a record you chose to keep.
+      "archive_retention_days": "0",
       # Whether the calendar marks the day a task was completed with a green
       # symbol. Off by default: done work is not on the backlog.
       "calendar_show_completed": "off",
@@ -2286,6 +2344,10 @@ SETTING_DEFAULTS = {
       # the active desktop theme; "of-light" / "of-dark" pin the app to an
       # OmniFocus-inspired palette of its own.
       "theme": "omarchy",
+      # The narrowest the full-screen window gets before it drops to a message
+      # asking to enlarge it. Below this the columns do not fit, so the app
+      # says so rather than drawing a cramped layout.
+      "fullscreen_width_limit": "768",
       }
 
 # Every spelling people actually type for a switch, folded to the two that are
@@ -2311,6 +2373,16 @@ def _done_retention_days(store: Store) -> int:
         days = int(str(raw).strip())
     except (TypeError, ValueError):
         days = 30
+    return days if days > 0 else 0
+
+
+def _archive_retention_days(store: Store) -> int:
+    """The archived-task retention in days; 0 keeps them forever."""
+    raw = settings(store).get("archive_retention_days", "0")
+    try:
+        days = int(str(raw).strip())
+    except (TypeError, ValueError):
+        days = 0
     return days if days > 0 else 0
 
 
@@ -2347,7 +2419,7 @@ def set_setting(store: Store, key: str, value: str) -> str:
         if value not in ("omarchy", "of-light", "of-dark"):
             raise GtdError(f"theme must be omarchy, of-light or of-dark, not {value!r}")
     elif key in ("auto_remove_empty_projects", "auto_remove_empty_contexts",
-                  "done_retention_days"):
+                  "done_retention_days", "archive_retention_days"):
           # A day count, not an on/off switch: 0 keeps the container forever, a
           # positive number is how many days it is kept before the sweeper may
           # take it. Anything that is not a whole number of days is a mistake.
@@ -2366,6 +2438,14 @@ def set_setting(store: Store, key: str, value: str) -> str:
             value = "off"
         else:
             raise GtdError(f"{key} must be on or off, not {value!r}")
+    elif key == "fullscreen_width_limit":
+        raw = str(value).strip()
+        if raw.isdigit() and int(raw) > 0:
+            value = str(int(raw))
+        else:
+            raise GtdError(
+                f"fullscreen_width_limit must be a positive whole number of "
+                f"pixels, not {value!r}")
     else:
         raise GtdError(f"unknown setting: {key!r}")
     store.set_meta(key, value)
@@ -2396,6 +2476,7 @@ def bar_snapshot(store: Store) -> dict:
         "overdue": data["overdue"],
         "upcoming": data["upcoming"],
         "waiting": data["waiting"],
+        "archived": data["archived"],
         "flagged": data["flagged"],
         "flagged_today": data.get("flagged_today", 0),
         "projects_open": data["projects_open"],
@@ -2415,7 +2496,7 @@ _PROJECT_HAS_OPEN_WORK = (
     "JOIN items c ON c.parent_id = d.node_id WHERE c.kind = 'project') "
     "SELECT d.root_id FROM descendants d JOIN items a "
     "ON a.parent_id = d.node_id WHERE a.kind = 'action' "
-    "AND a.status NOT IN ('done', 'dropped', 'trashed'))")
+    "AND a.status NOT IN ('done', 'dropped', 'archived', 'trashed'))")
 
 
 def _container_counts(store: Store) -> dict[str, tuple[int, int]]:

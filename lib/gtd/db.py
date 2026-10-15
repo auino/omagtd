@@ -15,8 +15,46 @@ import sqlite3
 import shutil
 from pathlib import Path
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 15
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "schema.sql"
+
+# The items table as it is after the archive migration. sqlite cannot widen a
+# CHECK constraint in place, so `_migrate_v14` rebuilds the table from this
+# definition; it is kept here, next to the migration, because it pins the shape
+# that migration produced rather than the shape schema.sql has today.
+_ITEMS_REBUILD_DDL = """
+CREATE TABLE items_new (
+  id           TEXT PRIMARY KEY,
+  kind         TEXT    NOT NULL CHECK (kind IN ('action', 'project', 'area')),
+  title        TEXT    NOT NULL,
+  notes        TEXT    NOT NULL DEFAULT '',
+  url          TEXT,
+  parent_id    TEXT    REFERENCES items(id) ON DELETE CASCADE,
+  status       TEXT    NOT NULL CHECK (status IN
+                 ('inbox', 'active', 'onhold', 'waiting', 'someday',
+                  'reference', 'done', 'dropped', 'archived', 'trashed')),
+  prev_status  TEXT,
+  priority     INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 3),
+  defer_at     TEXT,
+  due_at       TEXT,
+  duration     INTEGER,
+  started_at   TEXT,
+  completed_at TEXT,
+  dropped_at   TEXT,
+  archived_at  TEXT,
+  notified_at  TEXT,
+  waiting_for  TEXT,
+  repeat       TEXT,
+  review       TEXT    NOT NULL DEFAULT 'never'
+                 CHECK (review IN ('daily', 'weekly', 'monthly', 'quarterly',
+                                   'yearly', 'never')),
+  reviewed_at  TEXT,
+  rank         INTEGER NOT NULL DEFAULT 0,
+  created_at   TEXT    NOT NULL,
+  updated_at   TEXT    NOT NULL,
+  completed    INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1))
+)
+"""
 
 # Crockford-ish alphabet: no i, l, o, u, so an id can be read aloud on the
 # phone without "was that an l or a one".
@@ -146,6 +184,7 @@ class Store:
         Both need doing explicitly, and only when they are missing, so this
         stays a no-op on every normal open.
         """
+        self._finish_interrupted_items_rebuild()
         try:
             columns = {row["name"] for row in self.query("PRAGMA table_info(items)")}
         except sqlite3.OperationalError:
@@ -188,10 +227,19 @@ class Store:
             self._migrate_v11()
         if version < 12:
             self._migrate_v12()
+        # v14 and v15 rebuild or alter the table and are self-guarding (each
+        # early-returns once its change is in place), so they run every open
+        # rather than only when the stored version lags behind them. A database
+        # can sit at the current version with the change still undone — the
+        # meta is written at the tail of every open, so a build that recorded
+        # the version before the step landed would otherwise skip it forever.
+        self._migrate_v14()
+        self._migrate_v15()
         self._fold_context_case()
         self._fold_priority()
         self._fold_attachment_paths()
         self._drop_stale_deadline_views()
+        self._drop_stale_archived_views()
 
     def _fold_priority(self) -> None:
         """Lower every priority above 1 to the one flag there is now.
@@ -396,6 +444,107 @@ class Store:
         """
         self.db.execute("DROP INDEX IF EXISTS idx_item_tags_tag")
 
+    def _finish_interrupted_items_rebuild(self) -> None:
+        """Finish—or discard—a half-done items rebuild left by _migrate_v14.
+
+        The rebuild copies every row into `items_new`, drops `items` and renames
+        the copy into place. sqlite cannot roll that back as one unit, so a crash
+        or an error between the drop and the rename can strand the data in
+        `items_new` while an empty `items` is rebuilt from schema.sql on the
+        next open. The early-exit in _migrate_v14 then trusts that empty table —
+        which already carries the new shape—and never looks at the copy, so the
+        store reads as empty forever. This runs on every open and puts the rows
+        back where they belong.
+        """
+        tables = {row["name"] for row in self.query(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        if "items_new" not in tables:
+            return
+        has_items = "items" in tables
+        items_rows = self.scalar("SELECT COUNT(*) FROM items") if has_items else 0
+        new_rows = self.scalar("SELECT COUNT(*) FROM items_new")
+        # A leftover copy beside a populated items table is just debris the
+        # failed rebuild forgot; the rows already in place are the truth. Only
+        # an empty (or missing) items table with rows waiting in the copy is an
+        # interrupted rebuild worth finishing.
+        if items_rows or not new_rows:
+            self.db.execute("DROP TABLE IF EXISTS items_new")
+            return
+        for row in self.query(
+                "SELECT name FROM sqlite_master WHERE type = 'view'"):
+            self.db.execute(f'DROP VIEW IF EXISTS "{row["name"]}"')
+        self.db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            if has_items:
+                self.db.execute("DROP TABLE items")
+            self.db.execute("ALTER TABLE items_new RENAME TO items")
+        finally:
+            self.db.execute("PRAGMA foreign_keys = ON")
+
+    def _migrate_v14(self) -> None:
+        """Widen the items status CHECK to accept 'archived', add archived_at.
+
+        sqlite cannot redefine a CHECK constraint in place, so the table is
+        rebuilt: foreign keys off, a new table carrying the widened constraint,
+        every row copied across, then the old table dropped and the new one
+        renamed into its place. executescript rebuilds the indexes and views
+        around the fresh table on the same open.
+
+        `archived_at` is new, so it is left at its default NULL for every
+        existing row; the archive sweep falls back to `updated_at` for those.
+        """
+        body = self.scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'")
+        columns = {row["name"] for row in self.query("PRAGMA table_info(items)")}
+        if not body or ("'archived'" in body and "archived_at" in columns):
+            return
+        # Every view that reads items would be a dangling reference the moment
+        # the table is dropped, and sqlite refuses to rename into a name a view
+        # still points at, so they all go first. executescript rebuilds them
+        # from schema.sql on the same open.
+        for row in self.query(
+                "SELECT name FROM sqlite_master WHERE type = 'view'"):
+            self.db.execute(f'DROP VIEW IF EXISTS "{row["name"]}"')
+        self.db.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.db.execute("DROP TABLE IF EXISTS items_new")
+            self.db.execute(_ITEMS_REBUILD_DDL)
+            has_waiting = "waiting_for" in columns
+            self.db.execute(
+                "INSERT INTO items_new("
+                "id, kind, title, notes, url, parent_id, status, prev_status, "
+                "priority, defer_at, due_at, duration, started_at, completed_at, "
+                "dropped_at, notified_at, " + ("waiting_for, " if has_waiting else "") +
+                "repeat, review, reviewed_at, "
+                "rank, created_at, updated_at, completed) "
+                "SELECT id, kind, title, notes, url, parent_id, status, prev_status, "
+                "priority, defer_at, due_at, duration, started_at, completed_at, "
+                "dropped_at, notified_at, " + ("waiting_for, " if has_waiting else "") +
+                "repeat, review, reviewed_at, "
+                "rank, created_at, updated_at, completed FROM items")
+            self.db.execute("DROP TABLE items")
+            self.db.execute("ALTER TABLE items_new RENAME TO items")
+        finally:
+            self.db.execute("PRAGMA foreign_keys = ON")
+
+    def _migrate_v15(self) -> None:
+        """Drop the waiting_for column: delegation no longer records a name.
+
+        Parking a task as 'waiting' is still a status, but the store no longer
+        remembers who it is waiting on, so the column goes. sqlite refuses to
+        drop a column any view still points at, and `open_items` (`SELECT *`,
+        frozen at creation) and the `waiting_for` view both name it, so every
+        view is dropped first and executescript rebuilds them around the fresh
+        table on the same open.
+        """
+        columns = {row["name"] for row in self.query("PRAGMA table_info(items)")}
+        if "waiting_for" not in columns:
+            return
+        for row in self.query(
+                "SELECT name FROM sqlite_master WHERE type = 'view'"):
+            self.db.execute(f'DROP VIEW IF EXISTS "{row["name"]}"')
+        self.db.execute("ALTER TABLE items DROP COLUMN waiting_for")
+
     def _migrate_v6(self) -> None:
         """Realign every action with the new inbox rule.
 
@@ -439,6 +588,24 @@ class Store:
                 (view,))
             if body and ("due_at IS NULL" in body
                          or "substr(due_at, 1, 10) >= date('now', 'localtime')" not in body):
+                self.db.execute(f"DROP VIEW IF EXISTS {view}")
+
+    def _drop_stale_archived_views(self) -> None:
+        """Rebuild the views that must leave archived work out.
+
+        `archived` is a new status, so a database that recorded the current
+        schema version before `open_items` and `tag_load` learned to exclude it
+        keeps the older bodies — schema.sql can only CREATE VIEW IF NOT EXISTS,
+        which never replaces an existing view. Dropping them here lets
+        executescript build the current definitions in the same open. A database
+        rebuilt by `_migrate_v14` already has them right, so this is a no-op
+        there; it is the repair for one that reached version 14 beforehand.
+        """
+        for view in ("open_items", "tag_load"):
+            body = self.scalar(
+                "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
+                (view,))
+            if body and "'archived'" not in body:
                 self.db.execute(f"DROP VIEW IF EXISTS {view}")
 
     # ------------------------------------------------------------- queries

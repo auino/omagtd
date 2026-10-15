@@ -25,7 +25,7 @@ QtObject {
 
   readonly property var statusGlyphs: ({
     inbox: "·", waiting: "W", someday: "S", reference: "R", onhold: "‖",
-    done: "✓", dropped: "×", trashed: "⌫"
+    done: "✓", dropped: "×", trashed: "⌫", archived: "▣"
   })
 
   function apply(raw) {
@@ -76,8 +76,20 @@ QtObject {
   function isDeferred(item) {
     if (!item || !item.defer_at) return false
     var status = item.status || ""
-    if (status === "done" || status === "dropped" || status === "trashed") return false
+    if (status === "done" || status === "dropped" || status === "trashed" || status === "archived") return false
     return String(item.defer_at).slice(0, 16) > nowStamp()
+  }
+
+  // A task sitting on today's list because its defer window has opened, not
+  // because its deadline is today: the defer date has come round (or passed)
+  // while the deadline still lies ahead. It wears the same defer mark the
+  // calendar gives work scheduled for a day, so a deferred task due later does
+  // not read as one merely due today.
+  function scheduledIntoToday(item, todayStamp) {
+    if (!item || !item.defer_at || !item.due_at) return false
+    var today = String(todayStamp || nowStamp()).slice(0, 10)
+    return String(item.defer_at).slice(0, 10) <= today
+      && String(item.due_at).slice(0, 10) > today
   }
 
   // Expired waiting work has its own purple signal; all other expired work is
@@ -87,7 +99,7 @@ QtObject {
   // `deferred`; otherwise the future-date check is used.
   function colorFor(item, late, fallback, deferred) {
      if (!item) return fallback
-     if (item.status === "done") return green
+     if (item.status === "done" || item.status === "archived") return green
      var waiting = item.status === "waiting"
      if (waiting && late) return purple
      if (late) return red
@@ -110,7 +122,7 @@ QtObject {
     if (item.kind === "project") return item.completed ? "✓ " : "▸ "
     if (item.kind === "area") return "▤ "
     var status = item.status || ""
-    var finished = status === "done" || status === "dropped" || status === "trashed"
+    var finished = status === "done" || status === "dropped" || status === "trashed" || status === "archived"
     var parts = []
     var mark = statusGlyphs[status]
     // "inbox" maps to the same dot a plain task falls back to, so it is not

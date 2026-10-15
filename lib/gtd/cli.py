@@ -24,7 +24,7 @@ import time
 import urllib.parse
 import zipfile
 
-from . import __version__, core, dates, importer, quick, review
+from . import __version__, core, dates, exporter, importer, quick, review
 from .core import GtdError
 from .db import Store, db_path, now
 
@@ -76,7 +76,7 @@ class Out:
 STATUS_GLYPH = {
     "inbox": "?", "active": " ", "waiting": "W", "someday": "S",
     "reference": "R", "onhold": "‖", "done": "✓", "dropped": "×",
-    "trashed": "⌫",
+    "archived": "▣", "trashed": "⌫",
 }
 
 
@@ -91,8 +91,6 @@ def item_line(item: dict, out: Out, *, width: int = 62, show_container: bool = T
         meta.append(out.dim("#" + tag))
     if show_container and item.get("kind") == "action" and item.get("parent_title"):
         meta.append(out.dim(item["parent_title"]))
-    if item.get("waiting_for"):
-        meta.append(out.yellow("waiting " + item["waiting_for"]))
 
     due = item.get("due_at")
     defer = item.get("defer_at")
@@ -140,7 +138,7 @@ def cmd_capture(args, out: Out, store: Store) -> dict:
         project=args.project, area=args.area, tags=args.tag or (),
         priority=args.priority, defer=args.defer, due=args.due,
         duration=getattr(args, "duration", None),
-        waiting_for=args.who, repeat=args.repeat, review=args.review,
+        repeat=args.repeat, review=args.review,
         url=getattr(args, "link", None), attach=getattr(args, "attach", None) or (),
         notes=args.notes or "", to_inbox=args.inbox)
     if out.json_mode:
@@ -281,7 +279,7 @@ def cmd_show(args, out: Out, store: Store) -> dict:
         out.line("  " + out.dim("attach: ") + (attachment.get("name") or "")
                  + "  " + out.dim(attachment.get("uri") or ""))
     for label, key in (("defer", "defer_at"), ("due", "due_at"),
-                       ("waiting", "waiting_for"), ("repeat", "repeat")):
+                       ("repeat", "repeat")):
         value = detail.get(key)
         if key == "repeat" and value:
             value = f"every {value['interval']} {value['unit']}s after {value['from']}"
@@ -312,7 +310,7 @@ def cmd_organize(args, out: Out, store: Store) -> dict:
         duration=getattr(args, "duration", None),
         clear_duration=getattr(args, "clear_duration", False),
         notes=args.notes, review=args.review, repeat=args.repeat,
-        clear_repeat=args.no_repeat, waiting_for=args.who, inbox=args.inbox,
+        clear_repeat=args.no_repeat, inbox=args.inbox,
         url=getattr(args, "link", None), clear_url=getattr(args, "unlink", False),
         attach=getattr(args, "attach", None) or (),
         unattach=getattr(args, "unattach", None) or (),
@@ -327,7 +325,7 @@ def cmd_organize(args, out: Out, store: Store) -> dict:
 def cmd_clarify(args, out: Out, store: Store) -> dict:
     item = core.clarify(store, args.id, args.outcome, project=args.project,
                         area=args.area, defer=args.defer, due=args.due,
-                        waiting_for=args.who, priority=args.priority,
+                        priority=args.priority,
                         notes=args.notes, tags=args.tag or (),
                         review=args.review)
     if out.json_mode:
@@ -356,8 +354,6 @@ def cmd_triage(args, out: Out, store: Store) -> dict:
             hints.append("has a deadline")
         if item.get("defer_at"):
             hints.append("already dated")
-        if item.get("waiting_for"):
-            hints.append(f"waiting on {item['waiting_for']}")
         out.line("  " + item_line(item, out, width=54))
         out.line(out.dim(f"      captured {age}d ago"
                          + (f" · {', '.join(hints)}" if hints else "")
@@ -367,26 +363,21 @@ def cmd_triage(args, out: Out, store: Store) -> dict:
 
 def cmd_engage(args, out: Out, store: Store) -> dict:
     action = args.action
-    if action == "wait" and args.who:
-        item = core.organize(store, args.id, waiting_for=args.who)
-    elif action == "wait":
-        # No name given: the bare on/off decision, what the app's switch flips.
-        item = core.engage(store, args.id, "wait")
-    elif action == "done":
+    if action == "done":
         item = core.complete(store, args.id)
     elif action == "flag":
         item = core.engage(store, args.id, "flag",
                        priority=(1 if args.priority is None else args.priority))
     else:
         item = core.engage(store, args.id, action, when=args.when,
-                           priority=args.priority, waiting_for=args.who)
+                           priority=args.priority)
     if out.json_mode:
         return {"ok": True, "item": item}
     verbs = {"done": "completed", "drop": "dropped", "start": "started",
-             "stop": "stopped",
-             "wait": (("waiting on " + args.who) if args.who else "waiting"),
+             "stop": "stopped", "wait": "waiting",
              "resume": "resumed", "defer": "deferred to " + (args.when or ""),
              "flag": "flagged", "unflag": "unflagged",
+             "archive": "archived", "unarchive": "unarchived",
              "inbox": "back in the inbox"}
     out.line(f"{out.green(verbs.get(action, action))}  {item['title']} "
              f"{out.dim(item['id'])}")
@@ -787,6 +778,7 @@ def cmd_stats(args, out: Out, store: Store) -> dict:
         ("someday", data["someday"], "incubated"),
         ("flagged", data["flagged"], "flagged"),
         ("reference", data["reference"], "kept, not done"),
+        ("archived", data["archived"], "put away, kept until its retention"),
         ("projects", data["projects_open"], "active projects"),
         ("stalled", data["stalled"], "projects with nothing to do"),
         ("done today", data["done_today"], "finished today"),
@@ -812,7 +804,8 @@ def cmd_bar(args, out: Out, store: Store) -> dict:
 
 def cmd_settings(args, out: Out, store: Store) -> dict:
     """Show the knobs, or turn one: due_time, time_format, theme,
-    auto_remove_*, calendar_show_completed."""
+    auto_remove_*, done_retention_days, archive_retention_days,
+    calendar_show_completed."""
     if args.action == "set":
         value = core.set_setting(store, args.key, args.value)
         data = core.settings(store)
@@ -829,12 +822,16 @@ def cmd_settings(args, out: Out, store: Store) -> dict:
     out.line(f"  defer_time    {data['defer_time']}   a bare defer date lands on this clock")
     out.line(f"  time_format   {data['time_format']}   how clock times are shown")
     out.line(f"  theme         {data['theme']}   omarchy, of-light or of-dark")
+    out.line(f"  fullscreen_width_limit  {data['fullscreen_width_limit']}   "
+             "narrowest the full-screen window gets before it asks to enlarge")
     out.line(f"  auto_remove_empty_projects  {data['auto_remove_empty_projects']}   "
              "delete a project with nothing filed under it")
     out.line(f"  auto_remove_empty_contexts   {data['auto_remove_empty_contexts']}    "
               "delete a context with nothing on it")
     out.line(f"  done_retention_days      {data['done_retention_days']}    "
               "days a completed task is kept (0 = forever)")
+    out.line(f"  archive_retention_days   {data['archive_retention_days']}    "
+              "days an archived task is kept (0 = forever)")
     out.line(f"  calendar_show_completed   {data['calendar_show_completed']}     "
               "calendar green mark for completed tasks")
     return {"ok": True, **data}
@@ -998,8 +995,59 @@ def _export_zip(args, out: Out, store: Store) -> dict:
         return {"ok": True, "output": target, "bytes": size,
                 "entries": [name for name, _ in entries]}
     out.line(f"{out.green('exported')}  {target}  {size} bytes  "
-             f"{len(entries)} files")
+              f"{len(entries)} files")
     return {"ok": True, "output": target, "bytes": size}
+
+
+def cmd_export_day(args, out: Out, store: Store) -> dict:
+    """Write the commitments of one day to a file.
+
+    The day, the format and the destination are all command-line arguments; the
+    file carries the date it was taken in, alongside the day it is about. The
+    four formats the user may choose are markdown, JSON, YAML and a printable
+    PDF, and the same structured document feeds every one, so a file's contents
+    do not depend on which of the four was asked for.
+    """
+    fmt = exporter.format_for(getattr(args, "output", None), getattr(args, "fmt", None))
+    document = exporter.day_export(store, getattr(args, "date", None),
+                                  include_meta=True)
+    title = getattr(args, "title", None)
+
+    target = getattr(args, "output", None)
+    if not target:
+        # Without a destination the export goes to standard out, which only ever
+        # makes sense for a text format; a PDF asks for a file and prints nothing
+        # but an error.
+        if fmt == "pdf" and not out.json_mode:
+            out.fail("a pdf export needs -o FILE")
+            return {"ok": False}
+        data = exporter.render(document, fmt, title=title)
+        if out.json_mode:
+            return {"ok": True, "format": fmt,
+                    "bytes": len(data), "document": document}
+        sys.stdout.buffer.write(exporter.render(document, fmt, title=title))
+        sys.stdout.buffer.write(b"\n" if fmt != "pdf" else b"")
+        return {"ok": True, "format": fmt}
+
+    target = os.path.expanduser(target)
+    # A name with no suffix takes the chosen format's own, so an explicit
+    # `--format pdf` with a bare `-o day` still lands a .pdf on disk.
+    if not os.path.splitext(target)[1]:
+        target += exporter._FORMAT_BY_SUFFIX_INV.get(fmt, "")
+    os.makedirs(os.path.dirname(os.path.abspath(target)) or ".", exist_ok=True)
+    data = exporter.render(document, fmt, title=title)
+    with open(target, "wb") as handle:
+        handle.write(data)
+
+    if out.json_mode:
+        return {"ok": True, "output": target, "format": fmt, "bytes": len(data),
+                "date": document["date"], "exported_at": document["exported_at"],
+                "counts": document["counts"]}
+    total = sum(document["counts"].values())
+    out.line(f"{out.green('exported')}  {target}  {len(data)} bytes  "
+             f"{total} item" + ("" if total == 1 else "s")
+             + f" · {fmt.upper()}")
+    return {"ok": True, "output": target, "format": fmt, "bytes": len(data)}
 
 
 def _db_info(store: Store, items: int | None = None) -> dict:
@@ -1197,7 +1245,6 @@ def build_parser() -> argparse.ArgumentParser:
         node.add_argument("--priority", "-p", type=int, choices=(0, 1),
                           help="1 flags it, 0 clears it")
         node.add_argument("--notes", "-n")
-        node.add_argument("--who", help="who you are waiting on")
         node.add_argument("--also-close", action="store_true",
                           help="close the project if this was its last action")
         return node
@@ -1235,12 +1282,10 @@ def build_parser() -> argparse.ArgumentParser:
                    "  /Garden fence/    project (only if one exists by that name)\n"
                    "  <tomorrow         start / defer date\n"
                    "  >friday           deadline\n"
-                   "  =Ana              waiting for\n"
                    "  ~every week       repeat rule\n"
                    "Everything not named lands in the inbox."))
     node.add_argument("text", nargs="+", help="what you want to do")
     node.add_argument("--inbox", action="store_true", help="force into the inbox")
-    node.add_argument("--who", help="waiting for this person")
     node.add_argument("--repeat", help="repeat rule: 'every week', 'every other month'")
     organizing_flags(node)
 
@@ -1256,7 +1301,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     node = add("search", cmd_search, "search titles, notes, projects, contexts…",
                description="One free-text query across task titles and notes, "
-                           "project and area names, contexts, people "
+                           "project and area names, contexts "
                            "and attachment paths.")
     node.add_argument("query", nargs="+", help="what to look for")
     node.add_argument("--limit", type=int, default=50)
@@ -1274,7 +1319,7 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--tag", "-t")
 
     node = add("complete", cmd_complete, "finish a half-typed name",
-               description="Complete a project, context or waiting-for name "
+               description="Complete a project or context name "
                            "against the ones already in use. Only fires when "
                            "exactly one name starts with the text you typed.")
     node.add_argument("kind", choices=core.COMPLETION_KINDS,
@@ -1317,7 +1362,6 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--onhold", action="store_true", help="pause this container")
     node.add_argument("--repeat", help="set a repeat rule")
     node.add_argument("--no-repeat", action="store_true", help="stop repeating")
-    node.add_argument("--who", help="mark as waiting for this person")
     organizing_flags(node)
 
     node = add("clarify", cmd_clarify, "step 2: decide what an inbox item is",
@@ -1331,7 +1375,6 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--due")
     node.add_argument("--priority", "-p", type=int, choices=(0, 1))
     node.add_argument("--notes", "-n")
-    node.add_argument("--who", help="who you are waiting on (outcome=wait)")
     node.add_argument("--review", choices=core.REVIEW_INTERVALS)
 
     node = add("triage", cmd_triage, "step 2: work through the inbox",
@@ -1348,7 +1391,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Convenience verbs: `gtd done 3f2a` reads better than `gtd engage 3f2a done`.
     for verb, action in (("done", "done"), ("drop", "drop"), ("start", "start"),
                          ("stop", "stop"), ("resume", "resume"),
-                         ("flag", "flag"), ("unflag", "unflag")):
+                         ("flag", "flag"), ("unflag", "unflag"),
+                         ("archive", "archive"), ("unarchive", "unarchive")):
         node = add(verb, cmd_engage, f"{action} an item")
         engage_flags(node)
         node.set_defaults(action=action)
@@ -1372,8 +1416,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     node = add("wait", cmd_engage, "an action someone else owes you")
     node.add_argument("id")
-    node.add_argument("who", nargs="?",
-                      help="who owes it; omit to wait without naming anyone")
     node.add_argument("--when")
     node.add_argument("--priority", "-p", type=int, choices=(0, 1))
     node.add_argument("--notes", "-n")
@@ -1482,7 +1524,8 @@ def build_parser() -> argparse.ArgumentParser:
     node = add("settings", cmd_settings, "show or change preferences")
     node.add_argument("action", nargs="?", choices=("show", "set"), default="show")
     node.add_argument("key", nargs="?",
-                        help="due_time, time_format, theme or auto_remove_*")
+                        help="due_time, time_format, theme, auto_remove_* or "
+                             "*_retention_days")
     node.add_argument("value", nargs="?")
 
     node = add("calendar", cmd_calendar, "month or range view of commitments",
@@ -1547,6 +1590,21 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--format", choices=("json", "csv", "ofxml", "zip"), default="json")
     node.add_argument("-o", "--output", help="write to this file")
 
+    node = add("export-day", cmd_export_day,
+                "write one day's commitments to a file",
+                aliases=("day-export",),
+                description=("The overdue, due, scheduled and completed items of "
+                             "one day, with the moment the export was taken, in "
+                             "markdown, JSON, YAML or PDF. The day, the format "
+                             "and the destination are all arguments; with no "
+                             "destination the text formats go to standard out."))
+    node.add_argument("date", nargs="?", help="the day, today by default")
+    node.add_argument("-o", "--output", help="the output file (default: stdout)")
+    node.add_argument("-f", "--format", dest="fmt",
+                      choices=exporter.EXPORT_FORMATS,
+                      help="md, json, yaml or pdf (default: from the file suffix, or md)")
+    node.add_argument("--title", help="a heading at the top of an md or pdf")
+
     node = add("db", cmd_db, "database maintenance")
     node.add_argument("action", choices=("path", "info", "vacuum", "backup",
                                          "restore", "init"))
@@ -1609,6 +1667,12 @@ def main(argv=None) -> int:
     try:
           # Finished tasks empty on the same terms, on the retention setting.
          core.sweep_done(store)
+    except sqlite3.Error:
+         pass   # a sweep failure must never block the command that was asked for
+
+    try:
+          # Archived tasks empty on their own retention, the same way.
+         core.sweep_archived(store)
     except sqlite3.Error:
          pass   # a sweep failure must never block the command that was asked for
 

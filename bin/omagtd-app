@@ -10,6 +10,7 @@
 #   omagtd-app              # ensure running and give it keyboard focus
 #   omagtd-app view today   # ensure running, open the given view
 #   omagtd-app open-item y8xq0pv7   # ensure running, open the editor on an item
+#   omagtd-app edit-item y8xq0pv7   # ensure running, land on the task in Today
 #   omagtd-app quit         # quit the app if it is running
 
 set -e
@@ -37,6 +38,9 @@ case "${1:-}" in
     ;;
   open-item)
     quickshell ipc -p "$APP" call "$TARGET" openItem "$2"
+    ;;
+  edit-item)
+    quickshell ipc -p "$APP" call "$TARGET" editItem "$2"
     ;;
   quit)
     quickshell ipc -p "$APP" call "$TARGET" quit || true

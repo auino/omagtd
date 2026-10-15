@@ -30,32 +30,33 @@ SELECT
       AND ((i.due_at IS NOT NULL
             AND substr(i.due_at, 1, 10) >= date('now', 'localtime'))
            OR i.priority > 0)) AS today,
-  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'trashed')
+  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) < date('now', 'localtime')) AS overdue,
-  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'trashed')
+  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) = date('now', 'localtime')) AS due_today,
-  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'trashed')
+  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) = date('now', 'localtime')
       AND i.priority > 0) AS flagged_today,
-  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'trashed')
+  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) = date('now', 'localtime')
       AND substr(i.due_at, 1, 16) < ?) AS due_today_late,
-  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'trashed')
+  SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) > date('now', 'localtime')) AS upcoming,
   SUM(i.status = 'waiting') AS waiting,
   SUM(i.status = 'someday') AS someday,
   SUM(i.kind = 'action' AND i.priority > 0
-      AND i.status NOT IN ('done', 'dropped', 'trashed')) AS flagged,
+      AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')) AS flagged,
   SUM(i.status = 'reference') AS reference,
+  SUM(i.status = 'archived') AS archived,
   SUM(i.kind = 'project' AND i.status = 'active') AS projects,
   SUM(i.kind = 'project' AND i.status = 'active' AND i.completed = 0) AS projects_open,
   SUM(i.kind = 'area' AND i.status = 'active') AS areas,
-  SUM(i.status NOT IN ('done', 'dropped', 'trashed')) AS open_items,
+  SUM(i.status NOT IN ('done', 'dropped', 'archived', 'trashed')) AS open_items,
   SUM(i.status = 'done'
       AND substr(i.completed_at, 1, 10) = date('now', 'localtime')) AS done_today,
   SUM(i.kind = 'action' AND i.created_at >= ?) AS created_30,

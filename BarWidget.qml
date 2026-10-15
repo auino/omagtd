@@ -23,6 +23,7 @@ BarWidget {
   readonly property int dueToday: panel ? panel.dueToday : 0
   readonly property int dueTodayLate: panel ? panel.dueTodayLate : 0
   readonly property int overdue: panel ? panel.overdue : 0
+  readonly property int archived: panel ? panel.archived : 0
   readonly   property int flagged: panel ? panel.flagged : 0
   readonly property int flaggedToday: panel ? panel.flaggedToday : 0
 
@@ -74,6 +75,15 @@ BarWidget {
   // already on the given item.
   function openItem(id) {
     if (id) root.launchApp(["open-item", String(id)])
+  }
+
+  // The panel's Enter: hand one task to the full view, landing on Today with
+  // the task selected and its editor showing. The panel drops first so the app
+  // is the only surface on screen.
+  function editItem(id) {
+    if (!id) return
+    root.close()
+    root.launchApp(["edit-item", String(id)])
   }
 
   function injectPanel() {
@@ -194,6 +204,7 @@ BarWidget {
         t += "\n" + root.overdue + " past their deadline"
         t += "\n" + root.inbox + " in the inbox"
         t += "\n" + root.next + " next action" + (root.next === 1 ? "" : "s")
+        if (root.archived > 0) t += "\n" + root.archived + " archived"
         t += "\nClick for the panel · middle-click for the full view"
         return t
       }

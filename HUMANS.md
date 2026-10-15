@@ -8,12 +8,8 @@ Due to its AI and agents oriented approach, I found it an interesting approach.
 
 ### The need
 
-What is currently sticking me with the Apple ecosystem are (at least, to date) essentially two apps:
-* [OmniFocus](https://www.omnigroup.com/omnifocus/), for [GTD](https://en.wikipedia.org/wiki/Getting_Things_Done) and tasks management
-* [MoneyWiz](https://www.wiz.money), as a personal finance tool
-
-While I will not go deeper on explaining how such solutions are great (at least, imho), referring to this repository, I decided to focus on the first one.
-Hence, I started implementing a custom GTD system which takes the best from my experience from OmniFocus, but also exploiting the Omarchy and open-source phylosophy.
+What is currently sticking me with the Apple ecosystem are (at least, to date) essentially a few apps: one of them is [OmniFocus](https://www.omnigroup.com/omnifocus/), an app for [GTD](https://en.wikipedia.org/wiki/Getting_Things_Done) and tasks management.
+Hence, to overcome such limitation, I started implementing a custom GTD system which takes the best from my experience from OmniFocus, but also exploiting the Omarchy and open-source phylosophy.
 
 ### The vibe coding approach
 
@@ -42,6 +38,41 @@ First, run the following activties to move from OmniFocus to OmaGTD:
 ~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd import --format ofocus --tag ofimport <yourexportfile.ofocus>
 ```
 4. Review your imported files by opening the `ofimport` context in OmaGTD
+
+### Layout and structure
+
+Three components are implemented:
+* the top bar indicators, showing a `GTD` text along with a `n/m` indicator:
+while `n` identifies the tasks expired today, `m` identifies the total number of tasks expiring today. The entire indicator is red coloured if at least one task expired, orange coloured if at least one task is flagged as urgent (red colouring takes the priority) 
+* the panel view, which can be opened by clicking on the top bar indicator:
+from such view, all today's tasks are visible; also, it's possible to insert a new task
+* the full screen view, which can be opened through a dedicated `m` shortcut in the panel, or through command line/system shortcut:
+the screen is divided in multiple sections:
+** top part, with a big capture input field, plus a search and settings link
+** left part, with a navigation section and a general view for either projects or contexts
+** central part, with details on the currently selected view
+** right part, with details on specific tasks
+** bottom part, with details on app shortcut or ongoing actions
+
+In full screen mode, left-to-right parts navigation uses left/right arrows, while navigation across elements in the same part uses tab or up/down arrows.
+
+### New task creation syntax
+
+Tasks can be created by using a single text syntax populating specific fields: the basic syntax is the following one:
+
+```
+task_title #context /project/ <defer_date >deadline_date
+```
+
+While project names can have space characters (e.g., `Single actions`), this is not true for contexts.
+Also, contexts names are always converted to lower case.
+Both project and context names can be nested with a `>` symbol: e.g., `Personal>Errands`.
+
+### Interaction with other systems
+
+Currently, interaction is quite limited, at least in the current version of the app.
+While apps like OmniFocus use a cloud-based service to manage sync across devices, OmaGTD makes use of a local SQLite3 database.
+Therefore, interaction between different devices can still be done, but it requires CLI-based commands (e.g., integrated with `cron`), to either create tasks or export them, e.g., by using a shared folder.
 
 ### The limitations
 

@@ -132,7 +132,6 @@ def seed(path: str, tasks: int, seed_value: int = 7) -> None:
             if defer_at and due_at and defer_at[:10] > due_at[:10]:
                 defer_at, due_at = due_at, defer_at
             duration = rng.choice([None, 15, 30, 45, 60, 90, 120])
-            waiting_for = "the bank" if status == "waiting" and rng.random() < 0.5 else None
             created = _stamp(-rng.uniform(0, 730))
             updated = _stamp(-rng.uniform(0, min(60, 730)))
             completed_at = _stamp(-rng.uniform(0, 45)) if status == "done" else None
@@ -144,11 +143,11 @@ def seed(path: str, tasks: int, seed_value: int = 7) -> None:
             db.execute(
                 "INSERT INTO items(id, kind, title, notes, parent_id, status, "
                 "priority, defer_at, due_at, duration, completed_at, dropped_at, "
-                "waiting_for, rank, created_at, updated_at, completed) "
-                "VALUES(?, 'action', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "rank, created_at, updated_at, completed) "
+                "VALUES(?, 'action', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (item_id, title, "" if rng.random() > 0.3 else "some notes here",
                  parent, status, priority, defer_at, due_at, duration,
-                 completed_at, dropped_at, waiting_for, rng.randint(0, 100),
+                 completed_at, dropped_at, rng.randint(0, 100),
                  created, updated, completed))
 
             if rng.random() < 0.45:

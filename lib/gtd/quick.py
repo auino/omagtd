@@ -9,7 +9,6 @@ One line, no dialogs, everything else optional:
     /a/Home admin/          area, explicitly
     <tomorrow               defer date
     >friday                 deadline
-    =Ana                    waiting for someone
     ~every week             repeat rule
     *30m  *1h  *1h30m       estimated effort
 
@@ -32,10 +31,8 @@ TAG_RE = re.compile(r"^#(\S+)$")
 CONTAINER_RE = re.compile(r"^/(?P<body>[^/]+)/$")
 DUE_RE = re.compile(r"^>(?P<body>.*)$")
 DEFER_RE = re.compile(r"^<(?P<body>.*)$")
-WAIT_RE = re.compile(r"^=(?P<body>.*)$")
 REPEAT_RE = re.compile(r"^~(?P<body>.*)$")
 EFFORT_RE = re.compile(r"^\*(?P<body>.*)$")
-QUOTED_RE = re.compile(r'^"(?P<body>[^"]*)"$')
 
 # Longest run of following tokens a `>`/`<`/`~` prefix is allowed to claim
 # while looking for something that parses. Three covers "next friday" and
@@ -48,12 +45,7 @@ FLAG_TOKEN_RE = re.compile(r"^!{1,3}$")
 # swallow one, otherwise ">2026-11-01 ~every other month" would have its
 # deadline resolved from the head word of a three-word date and eat the
 # repeat rule with it.
-BREAK_RE = re.compile(r"^[<>=~/#!*]")
-
-
-def _unquote(value: str) -> str | None:
-    match = QUOTED_RE.fullmatch(value.strip())
-    return match.group("body") if match else None
+BREAK_RE = re.compile(r"^[<>~/#!*]")
 
 
 def _tokenize(text: str) -> list[str]:
@@ -96,9 +88,9 @@ def parse(text: str, known: dict[str, str] | None = None) -> dict:
     can be resolved without a database round trip. Names that are not in
     `known` stay in the title.
 
-    Returns a dict with title, notes, priority, defer, due, waiting_for,
-    repeat, tags, project, area and leftover_unknown (candidate containers
-    that no longer exist, kept so the caller can warn).
+    Returns a dict with title, notes, priority, defer, due, repeat, tags,
+    project, area and leftover_unknown (candidate containers that no longer
+    exist, kept so the caller can warn).
     """
     known = known or {}
     raw = (text or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -111,7 +103,6 @@ def parse(text: str, known: dict[str, str] | None = None) -> dict:
         "defer": None,
         "due": None,
         "duration": None,
-        "waiting_for": None,
         "repeat": None,
         "tags": [],
         "project": None,
@@ -180,21 +171,6 @@ def parse(text: str, known: dict[str, str] | None = None) -> dict:
                 title_parts.append(token)
             continue
 
-        if token.startswith("="):
-            # Deliberately not _claim: a name is only "parseable" if it is
-            # non-empty, so the greedy validator would swallow #tags.
-            body = _unquote(token[1:])
-            if body is None and len(token) > 1:
-                body = token[1:]
-                index += 1
-            elif body is None and index + 1 < len(tokens):
-                body = tokens[index + 1]
-                index += 2
-            else:
-                index += 1
-            out["waiting_for"] = (body or "").strip() or None
-            continue
-
         if token.startswith("~"):
             value, index = _claim(tokens, index, dates.parse_duration)
             if value:
@@ -236,6 +212,4 @@ def format_item(item: dict) -> str:
         parts.append(">" + dates.human(item["due_at"]))
     if item.get("duration"):
         parts.append("*" + dates.human_minutes(item["duration"]))
-    if item.get("waiting_for"):
-        parts.append("=" + item["waiting_for"])
     return " ".join(parts).strip()

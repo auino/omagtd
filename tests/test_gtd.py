@@ -184,18 +184,11 @@ class QuickEntry(unittest.TestCase):
         self.assertEqual(parsed["title"], "Repair the latch /Nonexistent/")
 
     def test_dates_do_not_swallow_the_sentence(self):
-        parsed = self.parse("Pay Ana <next friday >2026-11-01 ~every 2 months =Ana")
+        parsed = self.parse("Pay Ana <next friday >2026-11-01 ~every 2 months")
         self.assertEqual(parsed["defer"], dates.parse_when("next friday", defer=True))
         self.assertEqual(parsed["due"], dates.parse_when("2026-11-01"))
         self.assertEqual(parsed["repeat"], (2, "month"))
-        self.assertEqual(parsed["waiting_for"], "Ana")
         self.assertEqual(parsed["title"], "Pay Ana")
-
-    def test_waiting_for_keeps_tag_separate(self):
-        parsed = self.parse("Chase Ana =Ana #email")
-        self.assertEqual(parsed["waiting_for"], "Ana")
-        self.assertEqual(parsed["tags"], ["email"])
-        self.assertEqual(parsed["title"], "Chase Ana")
 
     def test_effort_estimate(self):
         parsed = self.parse("Draft the proposal *1h30m #work")
@@ -273,10 +266,8 @@ class Clarify(TempStore):
                          "done")
 
     def test_waiting_needs_someone(self):
-        with self.assertRaises(GtdError):
-            core.clarify(self.store, self.item["id"], "wait")
         self.assertEqual(
-            core.clarify(self.store, self.item["id"], "wait", waiting_for="Ana")["status"],
+            core.clarify(self.store, self.item["id"], "wait")["status"],
             "waiting")
 
     def test_deferred_after_a_deadline_is_refused(self):
@@ -468,16 +459,14 @@ class Engage(TempStore):
             core.engage(self.store, self.item["id"], "flag", priority=3)
 
     def test_waiting_then_resuming(self):
-        core.engage(self.store, self.item["id"], "wait", waiting_for="Ana")
-        self.assertEqual(core.get(self.store, self.item["id"])["waiting_for"], "Ana")
+        core.engage(self.store, self.item["id"], "wait")
+        self.assertEqual(core.get(self.store, self.item["id"])["status"], "waiting")
         resumed = core.engage(self.store, self.item["id"], "resume")
         self.assertEqual(resumed["status"], "active")
-        self.assertIsNone(resumed["waiting_for"])
 
     def test_waiting_can_be_a_boolean_without_a_name(self):
         waited = core.engage(self.store, self.item["id"], "wait")
         self.assertEqual(waited["status"], "waiting")
-        self.assertIsNone(waited["waiting_for"])
         resumed = core.engage(self.store, self.item["id"], "resume")
         self.assertEqual(resumed["status"], "active")
 
@@ -645,7 +634,7 @@ class Views(TempStore):
         self.scheduled = self.capture("Someday task")
         core.clarify(self.store, self.scheduled["id"], "someday")
         self.waiting = self.capture("Waiting on the bank")
-        core.clarify(self.store, self.waiting["id"], "wait", waiting_for="Bank")
+        core.clarify(self.store, self.waiting["id"], "wait")
         self.flagged = self.capture("Flagged thing", priority=1)
         self.late = self.capture("Late thing", due="-1d")
         self.ref = self.capture("Reference thing")
@@ -1350,6 +1339,19 @@ class Database(TempStore):
         with self.assertRaises(GtdError):
             core.capture(self.store, "Loud thing", priority=3)
 
+    def test_waiting_for_is_dropped_even_when_the_version_is_already_current(self):
+        # The meta is stamped at the tail of every open, so a build that
+        # recorded the current version before the column drop landed would
+        # otherwise sit at that version with `waiting_for` still present and
+        # never repair itself, because no version change ever comes to trigger
+        # the step again. The drop runs on every open instead.
+        self.capture("Buy nails #errands")
+        self.store.run("ALTER TABLE items ADD COLUMN waiting_for TEXT")
+        self.store.ensure()
+        columns = {r["name"] for r in self.store.query("PRAGMA table_info(items)")}
+        self.assertNotIn("waiting_for", columns)
+        self.assertEqual(self.store.meta("schema"), str(db_module.SCHEMA_VERSION))
+
     def test_the_context_index_is_upgraded_to_the_covering_one(self):
         # A v11 store carried idx_item_tags_tag(tag_id); the covering
         # (tag_id, item_id) index answers the context joins without a table
@@ -1377,6 +1379,187 @@ class Database(TempStore):
         self.assertIn("idx_item_tags_tag_item", indexes)
         self.assertNotIn("idx_item_tags_tag", indexes)
         self.assertEqual(reopened.meta("schema"), str(db_module.SCHEMA_VERSION))
+
+    def test_archive_widens_a_legacy_status_check(self):
+        # The v13 items table had no 'archived' in its CHECK and no archived_at
+        # column, and sqlite cannot widen either in place. Rebuild a copy back
+        # to that shape and prove a reopen migrates it.
+        core.ensure_container(self.store, "Garden fence", core.PROJECT)
+        keep = self.capture("Repair the latch", project="Garden fence")
+        self.capture("Buy nails #errands")
+        legacy = os.path.join(self.home, "legacy.sqlite3")
+        destination = sqlite3.connect(legacy)
+        try:
+            self.store.db.backup(destination)
+        finally:
+            destination.close()
+        old = sqlite3.connect(legacy)
+        try:
+            old.execute("PRAGMA foreign_keys = OFF")
+            old.execute(
+                "CREATE TABLE items_old ("
+                "id TEXT PRIMARY KEY, "
+                "kind TEXT NOT NULL CHECK (kind IN ('action', 'project', 'area')), "
+                "title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '', url TEXT, "
+                "parent_id TEXT REFERENCES items(id) ON DELETE CASCADE, "
+                "status TEXT NOT NULL CHECK (status IN "
+                "('inbox', 'active', 'onhold', 'waiting', 'someday', "
+                "'reference', 'done', 'dropped', 'trashed')), "
+                "prev_status TEXT, "
+                "priority INTEGER NOT NULL DEFAULT 0 CHECK (priority BETWEEN 0 AND 3), "
+                "defer_at TEXT, due_at TEXT, duration INTEGER, started_at TEXT, "
+                "completed_at TEXT, dropped_at TEXT, notified_at TEXT, "
+                "repeat TEXT, "
+                "review TEXT NOT NULL DEFAULT 'never' "
+                "CHECK (review IN ('daily', 'weekly', 'monthly', 'quarterly', "
+                "'yearly', 'never')), "
+                "reviewed_at TEXT, rank INTEGER NOT NULL DEFAULT 0, "
+                "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, "
+                "completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)))")
+            old.execute(
+                "INSERT INTO items_old(id, kind, title, notes, url, parent_id, "
+                "status, prev_status, priority, defer_at, due_at, duration, "
+                "started_at, completed_at, dropped_at, notified_at, "
+                "repeat, review, reviewed_at, rank, created_at, updated_at, "
+                "completed) SELECT id, kind, title, notes, url, parent_id, "
+                "status, prev_status, priority, defer_at, due_at, duration, "
+                "started_at, completed_at, dropped_at, notified_at, "
+                "repeat, review, reviewed_at, rank, created_at, updated_at, "
+                "completed FROM items")
+            old.execute("DROP TABLE items")
+            for view in [r[0] for r in old.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'view'")]:
+                old.execute(f'DROP VIEW IF EXISTS "{view}"')
+            old.execute("ALTER TABLE items_old RENAME TO items")
+            old.execute("UPDATE meta SET value = '13' WHERE key = 'schema'")
+            old.commit()
+        finally:
+            old.close()
+
+        reopened = Store(path=legacy)
+        self.addCleanup(reopened.close)
+        body = reopened.scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'items'")
+        self.assertIn("'archived'", body)
+        columns = {r["name"] for r in reopened.query("PRAGMA table_info(items)")}
+        self.assertIn("archived_at", columns)
+        # Every row came across, keeping its title and its project link.
+        self.assertEqual(
+            [r["title"] for r in reopened.query("SELECT title FROM items ORDER BY title")],
+            ["Buy nails", "Garden fence", "Repair the latch"])
+        # An old row has no archive date, and the archive now works on it.
+        keep_row = reopened.one(
+            "SELECT parent_id, archived_at FROM items WHERE title = 'Repair the latch'")
+        self.assertIsNone(keep_row["archived_at"])
+        self.assertTrue(keep_row["parent_id"])
+        keep_id = reopened.one(
+            "SELECT id FROM items WHERE title = 'Repair the latch'")["id"]
+        self.assertEqual(core.archive(reopened, keep_id)["status"], "archived")
+        # The archive index and view were rebuilt around the new table.
+        names = {r["name"] for r in reopened.query(
+            "SELECT name FROM sqlite_master WHERE type IN ('index', 'view')")}
+        self.assertIn("idx_items_archived", names)
+        self.assertIn("archived_items", names)
+        self.assertEqual(reopened.meta("schema"), str(db_module.SCHEMA_VERSION))
+
+    def test_stale_archive_views_are_rebuilt_on_open(self):
+        # A database can reach the current schema version *before* `open_items`
+        # and `tag_load` learned to leave archived work out. CREATE VIEW IF NOT
+        # EXISTS never replaces them, so the reopen has to notice the old bodies
+        # and drop them for schema.sql to rebuild.
+        self.capture("Water the plants #home")
+        archived = self.capture("Old tax file #home")
+        core.archive(self.store, archived["id"])
+        legacy = os.path.join(self.home, "stale.sqlite3")
+        destination = sqlite3.connect(legacy)
+        try:
+            self.store.db.backup(destination)
+        finally:
+            destination.close()
+        old = sqlite3.connect(legacy)
+        try:
+            old.execute("DROP VIEW IF EXISTS open_items")
+            old.execute(
+                "CREATE VIEW open_items AS SELECT * FROM items "
+                "WHERE status NOT IN ('done', 'dropped', 'trashed')")
+            old.execute("DROP VIEW IF EXISTS tag_load")
+            old.execute(
+                "CREATE VIEW tag_load AS "
+                "SELECT t.id, t.name, t.parent_id, t.review, t.reviewed_at, "
+                "(SELECT COUNT(*) FROM item_tags it JOIN items i ON i.id = it.item_id "
+                "WHERE it.tag_id = t.id AND i.kind = 'action' "
+                "AND i.status NOT IN ('done', 'dropped', 'trashed')) AS open_count "
+                "FROM tags t")
+            old.execute("UPDATE meta SET value = '14' WHERE key = 'schema'")
+            old.commit()
+        finally:
+            old.close()
+
+        reopened = Store(path=legacy)
+        self.addCleanup(reopened.close)
+        body = reopened.scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'open_items'")
+        self.assertIn("'archived'", body)
+        # The archived task is out of the open set again, and the context no
+        # longer counts it among its open work.
+        self.assertEqual(
+            [r["title"] for r in reopened.query(
+                "SELECT title FROM open_items ORDER BY title")],
+            ["Water the plants"])
+        load = reopened.one("SELECT open_count FROM tag_load WHERE name = 'home'")
+        self.assertEqual(load["open_count"], 1)
+
+    def test_an_interrupted_items_rebuild_is_finished_on_open(self):
+        # The v14 rebuild copies every row into `items_new`, drops `items` and
+        # renames the copy into place; sqlite cannot do that as one atomic step,
+        # so a failure between the drop and the rename strands the rows in
+        # `items_new` next to an empty `items`. The early-exit in the v14
+        # migration trusts that empty table, so without a repair the store reads
+        # as empty forever. Reproduce the half state and prove the reopen heals.
+        self.capture("Repair the latch", project="Garden fence")
+        self.capture("Buy nails #errands")
+        self.store.db.execute("ALTER TABLE items RENAME TO items_new")
+        self.store.db.execute(
+            db_module._ITEMS_REBUILD_DDL.replace(
+                "CREATE TABLE items_new", "CREATE TABLE items"))
+        self.assertEqual(self.store.scalar("SELECT COUNT(*) FROM items"), 0)
+        self.assertEqual(self.store.scalar("SELECT COUNT(*) FROM items_new"), 3)
+
+        reopened = Store(path=self.store.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(
+            [r["title"] for r in reopened.query("SELECT title FROM items ORDER BY title")],
+            ["Buy nails", "Garden fence", "Repair the latch"])
+        self.assertEqual(reopened.scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'items_new'"), 0)
+        # The views were rebuilt around the recovered table and read it again.
+        self.assertIn("Repair the latch",
+                      [r["title"] for r in reopened.query("SELECT title FROM open_items")])
+
+    def test_a_leftover_items_copy_is_discarded_when_items_is_populated(self):
+        # The mirror case: the rebuild got as far as copying, then stopped
+        # before touching `items`. The rows already in place are the truth, so
+        # the stray copy is dropped rather than allowed to shadow them.
+        self.capture("Keep me")
+        self.store.db.execute("ALTER TABLE items RENAME TO items_new")
+        self.store.db.execute(
+            db_module._ITEMS_REBUILD_DDL.replace(
+                "CREATE TABLE items_new", "CREATE TABLE items"))
+        self.store.db.execute(
+            "INSERT INTO items(id, kind, title, status, created_at, updated_at) "
+            "VALUES('keepme', 'action', 'Keep me', 'active', "
+            "'2026-01-01 00:00', '2026-01-01 00:00')")
+        self.store.db.execute(
+            "INSERT INTO items_new(id, kind, title, status, created_at, updated_at) "
+            "VALUES('stray', 'action', 'Stray copy', 'active', "
+            "'2026-01-01 00:00', '2026-01-01 00:00')")
+
+        reopened = Store(path=self.store.path)
+        self.addCleanup(reopened.close)
+        titles = [r["title"] for r in reopened.query("SELECT title FROM items ORDER BY title")]
+        self.assertEqual(titles, ["Keep me"])
+        self.assertEqual(reopened.scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'items_new'"), 0)
 
 
 # ------------------------------------------------------------------ archive
@@ -1423,6 +1606,130 @@ class Archived(TempStore):
         core.complete(self.store, second["id"])
         order = [r["title"] for r in core.search(self.store, "Plant the")]
         self.assertEqual(order, ["Plant the beans", "Plant the seeds"])
+
+
+# --------------------------------------------------------------- archive
+
+
+class ArchiveAction(TempStore):
+    def test_archiving_hides_a_task_from_every_open_view(self):
+        item = self.capture("Old tax file")
+        core.archive(self.store, item["id"])
+        for view in ("today", "focus", "inbox", "tasks", "projects"):
+            titles = [r["title"] for r in core.list_view(self.store, view)]
+            self.assertNotIn("Old tax file", titles, view)
+        self.assertEqual([r["title"] for r in core.list_view(self.store, "archived")],
+                         ["Old tax file"])
+
+    def test_archiving_is_not_deleting(self):
+        item = self.capture("Old tax file")
+        archived = core.archive(self.store, item["id"])
+        self.assertEqual(archived["status"], "archived")
+        self.assertTrue(self.store.one(
+            "SELECT archived_at FROM items WHERE id = ?", (item["id"],))["archived_at"])
+
+    def test_archived_items_leave_the_open_count(self):
+        self.capture("Still going")
+        gone = self.capture("Put away")
+        before = core.stats(self.store)["open_items"]
+        core.archive(self.store, gone["id"])
+        after = core.stats(self.store)
+        self.assertEqual(after["open_items"], before - 1)
+        self.assertEqual(after["archived"], 1)
+
+    def test_unarchive_returns_a_project_task_to_its_project(self):
+        core.ensure_container(self.store, "Garden fence", core.PROJECT)
+        item = self.capture("Repair the latch", project="Garden fence")
+        self.capture("Fit the new hinges", project="Garden fence")
+        core.archive(self.store, item["id"])
+        back = core.unarchive(self.store, item["id"])
+        self.assertEqual(back["status"], "active")
+        self.assertEqual(back["parent_title"], "Garden fence")
+
+    def test_archiving_the_last_action_takes_the_project_with_it(self):
+        # Archiving leaves the project with nothing open, which empties it the
+        # way a completion does; the archived task comes back unfiled.
+        core.ensure_container(self.store, "Garden fence", core.PROJECT)
+        item = self.capture("Repair the latch", project="Garden fence")
+        core.archive(self.store, item["id"])
+        self.assertIsNone(self.store.one(
+            "SELECT id FROM items WHERE title = 'Garden fence'"))
+        back = core.unarchive(self.store, item["id"])
+        self.assertEqual(back["status"], "active")
+        self.assertIsNone(back["parent_id"])
+
+    def test_unarchive_returns_a_loose_task_to_the_inbox(self):
+        item = self.capture("Loose")
+        core.archive(self.store, item["id"])
+        self.assertEqual(core.unarchive(self.store, item["id"])["status"], "inbox")
+
+    def test_unarchiving_something_that_is_not_archived_is_refused(self):
+        item = self.capture("Still here")
+        with self.assertRaises(GtdError):
+            core.unarchive(self.store, item["id"])
+
+    def test_archiving_is_idempotent(self):
+        item = self.capture("Put away")
+        self.assertEqual(core.archive(self.store, item["id"])["status"], "archived")
+        self.assertEqual(core.archive(self.store, item["id"])["status"], "archived")
+        self.assertEqual(len(core.list_view(self.store, "archived")), 1)
+
+
+class ArchiveRetention(TempStore):
+    def _archive_and_age(self, title, days):
+        item = self.capture(title)
+        core.archive(self.store, item["id"])
+        stamp = (dt.datetime.now() - dt.timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+        self.store.run("UPDATE items SET archived_at = ? WHERE id = ?",
+                       (stamp, item["id"]))
+        return item["id"]
+
+    def test_zero_keeps_archived_tasks_forever(self):
+        item_id = self._archive_and_age("Keep me", 999)
+        self.assertEqual(core.sweep_archived(self.store), [])
+        self.assertIsNotNone(self.store.one(
+            "SELECT id FROM items WHERE id = ?", (item_id,)))
+
+    def test_a_positive_window_deletes_only_what_has_passed_it(self):
+        core.set_setting(self.store, "archive_retention_days", "30")
+        old = self._archive_and_age("An old archive", 31)
+        self._archive_and_age("A recent archive", 5)
+        self.assertEqual(core.sweep_archived(self.store), [old])
+        self.assertEqual(len(core.list_view(self.store, "archived")), 1)
+
+    def test_the_window_cuts_on_the_archive_date_not_the_last_edit(self):
+        core.set_setting(self.store, "archive_retention_days", "30")
+        item = self.capture("Touched later")
+        core.archive(self.store, item["id"])
+        old = (dt.datetime.now() - dt.timedelta(days=40)).strftime("%Y-%m-%d %H:%M")
+        self.store.run("UPDATE items SET archived_at = ? WHERE id = ?",
+                       (old, item["id"]))
+        # updated_at is the moment of archiving, now; the window runs from
+        # archived_at, so the task is already due to go.
+        self.assertEqual(core.sweep_archived(self.store), [item["id"]])
+
+    def test_tasks_without_an_archive_date_fall_back_to_their_last_edit(self):
+        core.set_setting(self.store, "archive_retention_days", "30")
+        item = self.capture("Imported as archived")
+        self.store.run(
+            "UPDATE items SET status = 'archived', archived_at = NULL WHERE id = ?",
+            (item["id"],))
+        old = (dt.datetime.now() - dt.timedelta(days=40)).strftime("%Y-%m-%d %H:%M")
+        self.store.run("UPDATE items SET updated_at = ? WHERE id = ?",
+                       (old, item["id"]))
+        self.assertEqual(core.sweep_archived(self.store), [item["id"]])
+
+    def test_sweeping_the_archive_leaves_open_work_alone(self):
+        core.set_setting(self.store, "archive_retention_days", "1")
+        keep = self.capture("Still going")
+        gone = self.capture("Put away")
+        core.archive(self.store, gone["id"])
+        old = (dt.datetime.now() - dt.timedelta(days=10)).strftime("%Y-%m-%d %H:%M")
+        self.store.run("UPDATE items SET archived_at = ? WHERE id = ?",
+                       (old, gone["id"]))
+        core.sweep_archived(self.store)
+        self.assertIsNotNone(self.store.one(
+            "SELECT id FROM items WHERE id = ?", (keep["id"],)))
 
 
 # ---------------------------------------------------------- trash retention
@@ -1524,8 +1831,6 @@ class Completion(TempStore):
         core.ensure_tag(self.store, "errands")
         core.ensure_tag(self.store, "hardware")
         core.ensure_tag(self.store, "holiday")
-        self.capture("Buy nails", waiting_for="Ana")
-        self.capture("Email Anders", waiting_for="Anders")
 
     def test_unique_prefix_completes(self):
         self.assertEqual(core.complete_name(self.store, "project", "Garden f"),
@@ -1556,13 +1861,7 @@ class Completion(TempStore):
 
     def test_no_match_is_left_alone(self):
         self.assertIsNone(core.complete_name(self.store, "project", "Zzz"))
-        self.assertIsNone(core.complete_name(self.store, "waiting", "Z"))
-
-    def test_waiting_comes_from_whoever_you_already_wait_on(self):
-        self.assertEqual(core.complete_name(self.store, "waiting", "And"),
-                         "Anders")
-        # "An" is Ana and Anders both: a guess would be the wrong person.
-        self.assertIsNone(core.complete_name(self.store, "waiting", "An"))
+        self.assertIsNone(core.complete_name(self.store, "context", "Z"))
 
     def test_trashed_projects_are_not_offered(self):
         core.organize(self.store, self.diy["id"], inbox=True)
@@ -2009,8 +2308,10 @@ class Settings(TempStore):
                           "auto_remove_empty_projects": "7",
                           "auto_remove_empty_contexts": "7",
                           "done_retention_days": "30",
+                          "archive_retention_days": "0",
                           "calendar_show_completed": "off",
-                          "theme": "omarchy"})
+                          "theme": "omarchy",
+                          "fullscreen_width_limit": "768"})
 
         self.assertEqual(core.set_setting(self.store, "due_time", "7:30"), "07:30")
         self.assertEqual(core.set_setting(self.store, "defer_time", "8:30"), "08:30")
@@ -2028,12 +2329,25 @@ class Settings(TempStore):
         self.assertEqual(core.set_setting(self.store, "done_retention_days", "0"), "0")
         self.assertEqual(core.settings(self.store)["done_retention_days"], "0")
 
+        # The archive keeps its own retention, and 0 (the default) is forever.
+        self.assertEqual(core.set_setting(self.store, "archive_retention_days", "45"), "45")
+        self.assertEqual(core.settings(self.store)["archive_retention_days"], "45")
+        self.assertEqual(core.set_setting(self.store, "archive_retention_days", "0"), "0")
+        self.assertEqual(core.settings(self.store)["archive_retention_days"], "0")
+
         # The fullscreen app's palette is a name from a fixed set; the default
         # follows the desktop theme.
         self.assertEqual(core.set_setting(self.store, "theme", "OF-Light"), "of-light")
         self.assertEqual(core.settings(self.store)["theme"], "of-light")
         self.assertEqual(core.set_setting(self.store, "theme", "of-dark"), "of-dark")
         self.assertEqual(core.set_setting(self.store, "theme", "omarchy"), "omarchy")
+
+        # The fullscreen window's width limit is a positive whole number of
+        # pixels; 768 by default, and 7680 (below it) is a plausible value.
+        self.assertEqual(core.settings(self.store)["fullscreen_width_limit"], "768")
+        self.assertEqual(core.set_setting(self.store, "fullscreen_width_limit", "900"), "900")
+        self.assertEqual(core.settings(self.store)["fullscreen_width_limit"], "900")
+        self.assertEqual(core.set_setting(self.store, "fullscreen_width_limit", "768"), "768")
 
         # The calendar knob is an on/off switch, off by default.
         self.assertEqual(core.set_setting(self.store, "calendar_show_completed", "TRUE"), "on")
@@ -2054,6 +2368,12 @@ class Settings(TempStore):
             core.set_setting(self.store, "calendar_show_completed", "sometimes")
         with self.assertRaises(core.GtdError):
             core.set_setting(self.store, "theme", "solarized")
+        with self.assertRaises(core.GtdError):
+            core.set_setting(self.store, "fullscreen_width_limit", "wide")
+        with self.assertRaises(core.GtdError):
+            core.set_setting(self.store, "fullscreen_width_limit", "0")
+        with self.assertRaises(core.GtdError):
+            core.set_setting(self.store, "fullscreen_width_limit", "-100")
         with self.assertRaises(core.GtdError):
             core.set_setting(self.store, "nonsense", "x")
 
@@ -2331,6 +2651,31 @@ class CommandLine(TempStore):
         self.run_cli("trash", item_id)
         stamp = (dt.datetime.now() - dt.timedelta(days=31)).strftime("%Y-%m-%d %H:%M")
         self.store.run("UPDATE items SET updated_at = ? WHERE id = ?", (stamp, item_id))
+        # Nothing was asked to be purged: the next ordinary command is enough.
+        self.run_cli("bar")
+        self.assertIsNone(self.store.one("SELECT id FROM items WHERE id = ?",
+                                         (item_id,)))
+
+    def test_archive_and_unarchive_from_the_command_line(self):
+        item_id = self.run_cli("capture", "Old tax file")["item"]["id"]
+        self.assertEqual(self.run_cli("archive", item_id)["item"]["status"], "archived")
+        self.assertEqual(self.run_cli("list", "archived")["count"], 1)
+        self.assertEqual(self.run_cli("unarchive", item_id)["item"]["status"], "inbox")
+
+    def test_settings_reports_and_sets_the_archive_retention(self):
+        self.assertEqual(self.run_cli("settings")["archive_retention_days"], "0")
+        self.assertEqual(
+            self.run_cli("settings", "set", "archive_retention_days", "60")
+            ["archive_retention_days"],
+            "60")
+
+    def test_the_archive_prunes_itself(self):
+        self.run_cli("settings", "set", "archive_retention_days", "30")
+        item_id = self.run_cli("capture", "Old and put away")["item"]["id"]
+        self.run_cli("archive", item_id)
+        stamp = (dt.datetime.now() - dt.timedelta(days=31)).strftime("%Y-%m-%d %H:%M")
+        self.store.run("UPDATE items SET archived_at = ? WHERE id = ?",
+                       (stamp, item_id))
         # Nothing was asked to be purged: the next ordinary command is enough.
         self.run_cli("bar")
         self.assertIsNone(self.store.one("SELECT id FROM items WHERE id = ?",
@@ -2665,6 +3010,28 @@ class Undo(TempStore):
         core.undo(self.store, item["id"])
         self.assertEqual(core.get(self.store, item["id"])["priority"], 0)
 
+    def test_undo_survives_a_dropped_column(self):
+        # An undo entry snapshotted against an older schema may still name a
+        # column the items table no longer has (the waiting_for field is the
+        # case). The restore must skip the missing column instead of failing.
+        from lib.gtd import core
+        import json
+        item = core.capture(self.store, "Pay bill")
+        row = dict(self.store.one("SELECT * FROM items WHERE id = ?",
+                                  (item["id"],)))
+        row.pop("id")
+        row["waiting_for"] = "Ana"   # a column the live table does not have
+        self.store.run("INSERT INTO undo(at, action) VALUES(?, ?)",
+                       (core.now(), "stale"))
+        undo_id = self.store.scalar("SELECT last_insert_rowid()")
+        self.store.run("INSERT INTO undo_item(undo_id, item_id, data) "
+                       "VALUES(?, ?, ?)",
+                       (undo_id, item["id"], json.dumps(row)))
+        result = core.undo(self.store)
+        self.assertIn("reverted", result)
+        # The item still exists with the rest of its fields intact.
+        self.assertEqual(core.get(self.store, item["id"])["title"], "Pay bill")
+
 
 class Containers(TempStore):
     """The lazy left column: counts up front, actions on demand."""
@@ -2715,4 +3082,123 @@ class Containers(TempStore):
         item = self.capture("Just a task")
         with self.assertRaises(GtdError):
             core.subtree(self.store, item["id"])
+
+
+# ------------------------------------------------------------------ export
+
+from gtd import exporter  # noqa: E402
+
+
+class DayExport(TempStore):
+    """The `export-day` command: one day's commitments to a file, four ways."""
+
+    def _a_day(self):
+        # A day with one of each kind of commitment the export knows.
+        overdue = self.capture("Past due", due="-2d")
+        due = self.capture("Due today", due="today", priority=1)
+        scheduled = self.capture("Later this week", defer="-1d", due="+3d")
+        return overdue, due, scheduled
+
+    def test_builds_the_day_document_with_an_export_stamp(self):
+        overdue, due, scheduled = self._a_day()
+        doc = exporter.day_export(self.store, "today")
+        self.assertEqual(doc["date"], dt.date.today().isoformat())
+        self.assertTrue(doc["exported_at"])  # the moment the export was taken
+        self.assertEqual(doc["counts"], {"overdue": 1, "due": 1,
+                                         "scheduled": 1, "completed": 0})
+        # Every item carries the group it was filed under.
+        by_group = {it["group"] for it in doc["items"]}
+        self.assertEqual(by_group, {"overdue", "due", "scheduled"})
+        self.assertEqual(len(doc["items"]), 3)
+
+    def test_the_date_argument_selects_the_day(self):
+        self._a_day()
+        tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
+        doc = exporter.day_export(self.store, "tomorrow")
+        self.assertEqual(doc["date"], tomorrow)
+        # Nothing is committed to tomorrow, so its day is empty.
+        self.assertEqual(doc["counts"]["overdue"], 0)
+        self.assertEqual(doc["counts"]["due"], 0)
+
+    def test_markdown_carrying_the_date_and_time(self):
+        self._a_day()
+        doc = exporter.day_export(self.store, "today")
+        text = exporter.render(doc, "md").decode("utf-8")
+        self.assertIn(doc["date"], text)
+        self.assertIn(doc["exported_at"], text)
+        self.assertIn("Overdue", text)
+        self.assertIn("Due today", text)
+        self.assertIn("Past due", text)
+        # A flagged task shows its flag.
+        self.assertIn("! Due today", text)
+
+    def test_json_yaml_and_pdf_are_distinct_formats(self):
+        self._a_day()
+        doc = exporter.day_export(self.store, "today")
+        as_json = exporter.render(doc, "json").decode("utf-8")
+        self.assertEqual(json.loads(as_json)["date"], doc["date"])
+        as_yaml = exporter.render(doc, "yaml").decode("utf-8")
+        self.assertIn("date:", as_yaml)
+        as_pdf = exporter.render(doc, "pdf")
+        self.assertTrue(as_pdf.startswith(b"%PDF-1.4"))
+        self.assertTrue(as_pdf.rstrip().endswith(b"%%EOF"))
+
+    def test_yaml_round_trips(self):
+        self._a_day()
+        doc = exporter.day_export(self.store, "today")
+        text = exporter.render(doc, "yaml").decode("utf-8")
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        self.assertEqual(yaml.safe_load(text)["date"], doc["date"])
+
+    def test_format_is_inferred_from_the_suffix(self):
+        self.assertEqual(exporter.format_for("day.json", None), "json")
+        self.assertEqual(exporter.format_for("day.yaml", None), "yaml")
+        self.assertEqual(exporter.format_for("day.yml", None), "yaml")
+        self.assertEqual(exporter.format_for("day.pdf", None), "pdf")
+        self.assertEqual(exporter.format_for("day", None), "md")
+        # An explicit request wins over a mismatching suffix.
+        self.assertEqual(exporter.format_for("day.txt", "pdf"), "pdf")
+
+    def run_cli(self, *argv):
+        import subprocess
+        cli = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "gtd")
+        env = dict(os.environ)
+        env["GTD_DB"] = str(self.store.path)
+        return subprocess.run([sys.executable, cli, *argv],
+                              capture_output=True, text=True, env=env)
+
+    def test_cli_writes_each_format_to_a_file(self):
+        self._a_day()
+        for fmt in ("md", "json", "yaml", "pdf"):
+            target = os.path.join(self.home, f"day.{fmt}")
+            proc = self.run_cli("export-day", "today", "-f", fmt, "-o", target)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertTrue(os.path.exists(target))
+            self.assertGreater(os.path.getsize(target), 0)
+
+    def test_cli_infers_format_from_the_output_name(self):
+        self._a_day()
+        target = os.path.join(self.home, "day.json")
+        proc = self.run_cli("export-day", "today", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            self.assertTrue(json.loads(handle.read()).get("date"))
+
+    def test_cli_pdf_without_a_file_fails(self):
+        self._a_day()
+        proc = self.run_cli("export-day", "today", "-f", "pdf")
+        self.assertNotEqual(proc.returncode, 0)
+
+    def test_cli_json_reports_the_export_stamp(self):
+        self._a_day()
+        proc = self.run_cli("export-day", "today", "-f", "json",
+                            "--json", "-o", os.path.join(self.home, "d.json"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        data = json.loads(proc.stdout)
+        self.assertIn("exported_at", data)
+        self.assertEqual(data["format"], "json")
 
