@@ -3090,35 +3090,52 @@ from gtd import exporter  # noqa: E402
 
 
 class DayExport(TempStore):
-    """The `export-day` command: one day's commitments to a file, four ways."""
+    """The `export-day` command: one date's commitments to a file, four ways."""
 
     def _a_day(self):
-        # A day with one of each kind of commitment the export knows.
-        overdue = self.capture("Past due", due="-2d")
+        # Two commitments for today -- one due today, one whose defer window
+        # opens today -- plus one left over from a past day, which the export
+        # of today must not drag in.
+        past = self.capture("Past due", due="-2d")
         due = self.capture("Due today", due="today", priority=1)
         scheduled = self.capture("Later this week", defer="-1d", due="+3d")
-        return overdue, due, scheduled
+        return past, due, scheduled
 
-    def test_builds_the_day_document_with_an_export_stamp(self):
-        overdue, due, scheduled = self._a_day()
+    def test_the_export_holds_only_the_named_date(self):
+        # An export of today is the Today view, never a running backlog of work
+        # left over from earlier days.
+        past, due, scheduled = self._a_day()
         doc = exporter.day_export(self.store, "today")
         self.assertEqual(doc["date"], dt.date.today().isoformat())
         self.assertTrue(doc["exported_at"])  # the moment the export was taken
-        self.assertEqual(doc["counts"], {"overdue": 1, "due": 1,
-                                         "scheduled": 1, "completed": 0})
-        # Every item carries the group it was filed under.
-        by_group = {it["group"] for it in doc["items"]}
-        self.assertEqual(by_group, {"overdue", "due", "scheduled"})
-        self.assertEqual(len(doc["items"]), 3)
+        self.assertEqual(set(doc["counts"]), {"due", "scheduled", "completed"})
+        titles = {it["title"] for it in doc["items"]}
+        self.assertIn("Due today", titles)
+        self.assertIn("Later this week", titles)
+        # The task whose deadline has passed is not on today's list.
+        self.assertNotIn("Past due", titles)
+
+    def test_a_past_date_shows_only_work_due_then(self):
+        past, due, scheduled = self._a_day()
+        yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+        doc = exporter.day_export(self.store, yesterday)
+        titles = {it["title"] for it in doc["items"]}
+        # Nothing is due yesterday, and a past task is not pulled forward.
+        self.assertNotIn("Past due", titles)
+        self.assertNotIn("Due today", titles)
 
     def test_the_date_argument_selects_the_day(self):
         self._a_day()
         tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
-        doc = exporter.day_export(self.store, "tomorrow")
+        doc = exporter.day_export(self.store, tomorrow)
         self.assertEqual(doc["date"], tomorrow)
-        # Nothing is committed to tomorrow, so its day is empty.
-        self.assertEqual(doc["counts"]["overdue"], 0)
+        # Nothing is *due* tomorrow; the deferred task's window reaches it, so
+        # it is scheduled rather than due.
         self.assertEqual(doc["counts"]["due"], 0)
+        self.assertEqual(doc["counts"]["scheduled"], 1)
+        self.assertEqual(
+            {it["title"] for it in doc["items"]},
+            {"Later this week"})
 
     def test_markdown_carrying_the_date_and_time(self):
         self._a_day()
@@ -3126,11 +3143,20 @@ class DayExport(TempStore):
         text = exporter.render(doc, "md").decode("utf-8")
         self.assertIn(doc["date"], text)
         self.assertIn(doc["exported_at"], text)
-        self.assertIn("Overdue", text)
         self.assertIn("Due today", text)
-        self.assertIn("Past due", text)
+        self.assertIn("Later this week", text)
         # A flagged task shows its flag.
         self.assertIn("! Due today", text)
+        # The backlog is not a heading the export prints.
+        self.assertNotIn("Overdue", text)
+
+    def test_a_deferred_task_matches_the_calendar(self):
+        # A task in its defer window reads the same as the calendar's "scheduled"
+        # group: grey, marked, on the list.
+        self.capture("Later this week", defer="-1d", due="+3d")
+        doc = exporter.day_export(self.store, "today")
+        item = next(i for i in doc["items"] if i["title"] == "Later this week")
+        self.assertEqual(item["group"], "due")
 
     def test_json_yaml_and_pdf_are_distinct_formats(self):
         self._a_day()
@@ -3142,6 +3168,27 @@ class DayExport(TempStore):
         as_pdf = exporter.render(doc, "pdf")
         self.assertTrue(as_pdf.startswith(b"%PDF-1.4"))
         self.assertTrue(as_pdf.rstrip().endswith(b"%%EOF"))
+
+    def test_pdf_reports_no_structural_errors(self):
+        # The hand-written PDF must parse: a real reader pulls the day's text
+        # out of it. Skipped where no PDF tool is on the box.
+        self._a_day()
+        doc = exporter.day_export(self.store, "today")
+        data = exporter.render(doc, "pdf")
+        try:
+            import subprocess
+            path = os.path.join(self.home, "check.pdf")
+            with open(path, "wb") as handle:
+                handle.write(data)
+            proc = subprocess.run(["pdftotext", path, "-"],
+                                  capture_output=True, text=True)
+        except (OSError, FileNotFoundError):
+            self.skipTest("no pdftotext on this box")
+        out = proc.stdout
+        self.assertIn("Due", out)
+        self.assertIn("Due today", out)
+        self.assertNotIn("xref", out)
+        self.assertNotIn("Illegal", out)
 
     def test_yaml_round_trips(self):
         self._a_day()

@@ -29,16 +29,24 @@ _FORMAT_BY_SUFFIX = {
 # The one suffix a name with no suffix is given, per format.
 _FORMAT_BY_SUFFIX_INV = {"md": ".md", "json": ".json", "yaml": ".yaml", "pdf": ".pdf"}
 
-# The order a day's groups come down the page: what is past its deadline first,
-# then what is due today, then work whose defer window has opened, and finally
-# what got finished. The same order the calendar and agenda print.
-_GROUPS = ("overdue", "due", "scheduled", "completed")
+# The order a day's groups come down the page: what is due that day first, then
+# work whose defer window has opened, then what got finished. There is no
+# overdue group: an export is about one date, and a task shows up only when its
+# own date matches it, not as a running backlog left over from earlier days.
+_GROUPS = ("due", "scheduled", "completed")
 
 _GROUP_HEADING = {
-    "overdue": "Overdue",
-    "due": "Due today",
+    "due": "Due",
     "scheduled": "Scheduled here",
     "completed": "Completed",
+}
+
+# The short word a group counts read as in the one-line summary, set apart from
+# its heading so "Scheduled here" stays a heading while "scheduled" is the count.
+_GROUP_WORD = {
+    "due": "due",
+    "scheduled": "scheduled",
+    "completed": "completed",
 }
 
 
@@ -78,20 +86,55 @@ def _resolve_day(text: str | None) -> str:
 
 def day_export(store, *text: str, groups: tuple[str, ...] = _GROUPS,
                include_meta: bool = True) -> dict:
-    """The day's commitments as one structured document.
+    """The commitments of one date as one structured document.
 
-    Each group holds the items :func:`core.calendar` would file under it. The
-    same dictionary drives every renderer, and a date that is the day it was
-    taken for, not the day it happens to be read on: re-running the export the
-    next morning still reports the day the file names.
+    An export is about a single date, so it holds only the work that date is
+    about: what is due then, work whose defer window is open then, and what got
+    finished then. When the date is today this is the same list the Today view
+    shows; on another date it is the work due or scheduled for that day. A task
+    left over from an earlier day is not dragged in as a running backlog -- the
+    export of the 5th holds only the 5th. The same dictionary drives every
+    renderer, and a date that is the day it was taken for, not the day it
+    happens to be read on: re-running the export the next morning still reports
+    the day the file names.
     """
     day = _resolve_day(text[0] if text else None)
-    data = core.calendar(store, start=day, end=day)
-    cell = data["days"][0]
+    is_today = day == core.today()
+
+    raw: dict[str, list[dict]] = {name: [] for name in groups}
+    if "due" in groups:
+        if is_today:
+            # The Today view, exactly as the full-screen list shows it: due
+            # today or flagged -- deferred work with a deadline folds in here
+            # too, so it is not also filed under "scheduled".
+            raw["due"] = list(core.list_view(store, "today"))
+        else:
+            raw["due"] = [dict(r) for r in store.query(
+                "SELECT * FROM item_titles t WHERE t.kind = 'action' "
+                "AND t.status NOT IN ('done', 'dropped', 'archived', 'trashed') "
+                "AND t.due_at IS NOT NULL AND substr(t.due_at, 1, 10) = ? "
+                "ORDER BY t.due_at, t.priority DESC", (day,))]
+    if "scheduled" in groups and not is_today:
+        # Work whose defer window opens on or before the day and whose deadline
+        # lies after it: the same span the calendar files under "scheduled", so
+        # a deferred task reads the same here as on the month.
+        raw["scheduled"] = [dict(r) for r in store.query(
+            "SELECT * FROM item_titles t WHERE t.kind = 'action' "
+            "AND t.status NOT IN ('done', 'dropped', 'archived', 'trashed') "
+            "AND t.defer_at IS NOT NULL AND t.due_at IS NOT NULL "
+            "AND substr(t.defer_at, 1, 10) <= ? "
+            "AND substr(t.due_at, 1, 10) > ? "
+            "ORDER BY t.priority DESC, t.defer_at", (day, day))]
+    if "completed" in groups and is_today:
+        raw["completed"] = [dict(r) for r in store.query(
+            "SELECT * FROM item_titles t WHERE t.status = 'done' "
+            "AND t.completed_at IS NOT NULL "
+            "AND substr(t.completed_at, 1, 10) = ? "
+            "ORDER BY t.completed_at", (day,))]
 
     items = []
     for group in groups:
-        for entry in cell.get(group) or []:
+        for entry in raw[group]:
             item = {
                 "id": entry.get("id"),
                 "title": entry.get("title") or "",
@@ -108,17 +151,18 @@ def day_export(store, *text: str, groups: tuple[str, ...] = _GROUPS,
                 item["tags"] = core.tags_of(store, entry.get("id")) or []
             items.append(item)
 
+    weekday = _dt.date.fromisoformat(day).strftime("%A")
     document = {
         # The day the document is about, and the moment it was written. The
         # latter is what makes an export a record of when it was taken; an
         # "as of" line a reader can trust without opening the database again.
         "date": day,
-        "weekday": cell.get("weekday", _dt.date.fromisoformat(day).strftime("%A")),
+        "weekday": weekday,
         "exported_at": now_stamp(),
         "groups": {name: [item for item in items if item["group"] == name]
                    for name in groups},
         "items": items,
-        "counts": {name: len(cell.get(name) or []) for name in groups},
+        "counts": {name: len(raw[name]) for name in groups},
     }
     return document
 
@@ -209,7 +253,7 @@ def render_markdown(document: dict, *, title: str = "") -> str:
              ""]
     total = sum(document["counts"].values())
     detail = " · ".join(f"{document['counts'][name]} "
-                        + "of " + _GROUP_HEADING[name].lower().rstrip("d")
+                        + _GROUP_WORD[name]
                         for name in document["groups"] if document["counts"][name])
     lines.append(f"{total} item" + ("" if total == 1 else "s")
                  + (f" — {detail}" if detail else ""))
@@ -370,10 +414,10 @@ def render_pdf(document: dict, *, title: str = "") -> bytes:
     streams = _pdf_pages(document, title)
 
     # Number the objects up front so every cross-reference is fixed before a
-    # single byte is written. 1 catalog, 2 the page tree, 3 the font, then a
-    # page and a content stream per sheet.
+    # single byte is written. 1 the catalog, 2 the page tree, 3 the font, then a
+    # page and its content stream per sheet, alternating. Page i is object
+    # 4 + 2*i; its stream the very next object, 5 + 2*i.
     page_obj = 4
-    stream_obj = 4 + 2 * len(streams)
 
     kids = b" ".join(("%d 0 R" % (page_obj + 2 * i)).encode()
                      for i in range(len(streams)))
@@ -384,12 +428,15 @@ def render_pdf(document: dict, *, title: str = "") -> bytes:
     ]
     for i, stream in enumerate(streams):
         p = page_obj + 2 * i
-        s = stream_obj + 2 * i
+        s = p + 1
+        # /Resources is a dict whose /Font is itself a dict mapping the name F1
+        # (the very name the content stream's "F1 11 Tf" picks) onto the font.
+        resources = b"<< /Font <</F1 3 0 R >> >>"
         objects.append(
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Resources <</Font 3 0 R>> /Contents %d 0 R >>" % s)
-        objects.append(b"<< /Length %d >>\nstream\n%s\nendstream"
-                       % (len(stream), stream))
+            b"/Resources " + resources + b" /Contents %d 0 R >>" % s)
+        objects.append(b"<< /Length %d >>\nstream\n%s"
+                       % (len(stream), stream) + b"endstream")
     return _pdf_assemble(objects)
 
 

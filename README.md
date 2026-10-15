@@ -93,10 +93,13 @@ a `.ofxml` backup, or the line-oriented `.ofocusmx` text — plus our own
 `json`, `csv` and `zip`. The format is chosen by content unless `--format`
 says otherwise.
 
-`export day` writes the commitments of a single day — overdue, due, scheduled
-and completed, with the moment the export was taken — to a file in markdown,
-JSON, YAML or PDF. The day, the format and the destination are all arguments;
-the format is taken from the file's suffix unless `--format` says otherwise,
+`export day` writes the commitments of a single date — what is due then, work
+whose defer window is open, and what got finished, with the moment the export
+was taken — to a file in markdown, JSON, YAML or PDF. For today this is the same
+list the Today view shows; for another date it is the work due or scheduled for
+that day, and a task left over from an earlier date is not dragged in. The day,
+the format and the destination are all arguments; the format is taken from the
+file's suffix unless `--format` says otherwise,
 and with no destination the text formats go to standard out:
 
 ```bash
