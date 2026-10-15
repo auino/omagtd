@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.auino.omagtd",
   "name": "OmaGTD",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "author": "Enrico Cambiaso",
   "license": "MIT",
   "description": "Getting Things Done for Omarchy, modelled on OmniFocus. A bar pill that shows the inbox and the next actions, a keyboard-driven panel over what is due today, a fullscreen view for the full five-step GTD workflow — clarify, organize, reflect, engage — and a sqlite3 database underneath. Projects/areas, contexts as tags, waiting, someday/maybe, recurring actions, defer/due forecasting, an internal calendar, and OmniFocus-style review counters. Ships a `gtd` CLI so every step is scriptable and bindable to a hotkey.",
@@ -16,74 +16,8 @@
     "displayName": "OmaGTD",
     "description": "Inbox and next-action counts in the bar; the panel is what is due today.",
     "category": "Productivity",
-    "aliases": [
-      "gtd",
-      "todo",
-      "tasks",
-      "inbox",
-      "next action",
-      "getting things done",
-      "omnifocus"
-    ],
     "allowMultiple": false,
-    "defaultSection": "right",
-    "defaults": {
-      "showInboxCount": true,
-      "showTodayCount": true,
-      "compact": false,
-      "hideZeroCounts": false,
-      "urgentInboxThreshold": 10,
-      "pollIntervalSec": 60
-    },
-    "schema": [
-      {
-        "key": "showInboxCount",
-        "type": "boolean",
-        "label": "Show the inbox count",
-        "defaultValue": true,
-        "description": "The number of unprocessed items sitting in the inbox."
-      },
-      {
-        "key": "showTodayCount",
-        "type": "boolean",
-        "label": "Show the next-action count",
-        "defaultValue": true,
-        "description": "How many actions you could do right now. Zero means focus is clear."
-      },
-      {
-        "key": "compact",
-        "type": "boolean",
-        "label": "Glyph only",
-        "defaultValue": false,
-        "description": "Show the checkmark glyph without any numbers."
-      },
-      {
-        "key": "hideZeroCounts",
-        "type": "boolean",
-        "label": "Hide the counts when nothing is due",
-        "defaultValue": false,
-        "description": "When nothing has expired and nothing is due today, show just \"GTD\" instead of \"GTD 0/0\". A clear day reads as a clear day."
-      },
-      {
-        "key": "urgentInboxThreshold",
-        "type": "integer",
-        "label": "Inbox turns urgent at",
-        "min": 1,
-        "max": 500,
-        "step": 1,
-        "defaultValue": 10,
-        "description": "The pill turns red once the inbox holds this many items \u2014 the signal to clarify instead of capture."
-      },
-      {
-        "key": "pollIntervalSec",
-        "type": "integer",
-        "label": "Refresh every (seconds)",
-        "min": 10,
-        "max": 900,
-        "step": 5,
-        "defaultValue": 60,
-        "description": "How often the counts are re-read from the database. Changes made in the panel update immediately."
-      }
-    ]
-  }
+    "defaultSection": "right"
+  },
+  "homepage": "https://github.com/auino/omagtd"
 }
