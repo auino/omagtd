@@ -48,11 +48,11 @@ while `n` identifies the tasks expired today, `m` identifies the total number of
 from such view, all today's tasks are visible; also, it's possible to insert a new task
 * the full screen view, which can be opened through a dedicated `m` shortcut in the panel, or through command line/system shortcut:
 the screen is divided in multiple sections:
-** top part, with a big capture input field, plus a search and settings link
-** left part, with a navigation section and a general view for either projects or contexts
-** central part, with details on the currently selected view
-** right part, with details on specific tasks
-** bottom part, with details on app shortcut or ongoing actions
+  * top part, with a big capture input field, plus a search and settings link
+  * left part, with a navigation section and a general view for either projects or contexts
+  * central part, with details on the currently selected view
+  * right part, with details on specific tasks
+  * bottom part, with details on app shortcut or ongoing actions
 
 In full screen mode, left-to-right parts navigation uses left/right arrows, while navigation across elements in the same part uses tab or up/down arrows.
 
@@ -67,6 +67,12 @@ task_title #context /project/ <defer_date >deadline_date
 While project names can have space characters (e.g., `Single actions`), this is not true for contexts.
 Also, contexts names are always converted to lower case.
 Both project and context names can be nested with a `>` symbol: e.g., `Personal>Errands`.
+
+### Relevant contents
+
+* `~/.config/omarchy/plugins/com.auino.omagtd/` the folder including the plugin
+* `~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd` the command line version of the app (use `-h` for help)
+* `~/.local/share/omagtd/` the folder with your local data, including inner database and attachments
 
 ### Interaction with other systems
 
