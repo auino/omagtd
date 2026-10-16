@@ -4,16 +4,17 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// GTD: the pill in the bar, host for the panel, and launcher of the app.
+// GTD: the pill in the bar, host for the panel, and launcher of the overlay.
 //
 // This is the manifest entry point. It owns the pill, the IPC target and the
-// quick panel (Panel.qml); the full view is the standalone application in
-// app/App.qml, a real window in its own quickshell process that outlives this
-// bar. The shell routes on this shape — it looks for open/close/opened on the
+// quick panel (Panel.qml); the full view is a shell-managed overlay. The shell
+// routes on this shape — it looks for open/close/opened on the
 // widget mounted in the bar slot — so the pill must be the thing the bar sees.
 BarWidget {
   id: root
   moduleName: "com.auino.omagtd"
+  // The bar injects a capability-scoped shell facade for this plugin.
+  function pluginShell() { return root.bar ? root.bar.shell : null }
 
   // Mirrors of the panel's state, so the pill has nothing to compute.
   readonly property var panel: panelLoader.item
@@ -52,29 +53,37 @@ BarWidget {
   function closeForPopoutSwitch() { if (panel) panel.closeForPopoutSwitch() }
   function refresh() { if (panel) panel.refresh() }
 
-  // The full view is the standalone app now, not a second surface of this
-  // widget; the panel hands off to it rather than living on screen next to it.
-  // Handing over drops the panel first, so the app is the only OmaGTD surface
-  // the user is looking at.
-  //
-  // bin/omagtd-app starts it (single-instance by config) and forwards a
-  // command over IPC.
-  readonly property string appCli: Qt.resolvedUrl("bin/omagtd-app").toString().replace("file://", "")
-
-  function launchApp(args) {
-    try { Quickshell.execDetached([root.appCli].concat(args || [])) } catch (e) {}
+  // The shell owns the fullscreen surface. A small JSON payload lets the
+  // overlay open the requested view or item after the shell loads it.
+  function summonFullscreen(payload) {
+    var api = root.pluginShell()
+    if (api && typeof api.summon === "function")
+      api.summon("com.auino.omagtd", JSON.stringify(payload || {}))
   }
 
-  function openFullscreen() { root.close(); root.launchApp(["focus"]) }
-  function closeFullscreen() { root.launchApp(["quit"]) }
-  function toggleFullscreen() { root.close(); root.launchApp(["focus"]) }
+  function openFullscreen() { root.close(); root.summonFullscreen({ action: "open" }) }
+  function closeFullscreen() {
+    var api = root.pluginShell()
+    if (api && typeof api.hide === "function") api.hide("com.auino.omagtd")
+  }
+  function toggleFullscreen() {
+    root.close()
+    var api = root.pluginShell()
+    if (api && typeof api.toggle === "function")
+      api.toggle("com.auino.omagtd", JSON.stringify({ action: "open" }))
+  }
 
-  function viewApp(name) { root.launchApp(["view", name]) }
+  function viewApp(name) {
+    root.close()
+    root.summonFullscreen({ action: "view", name: name })
+  }
 
   // Used by the panel's capture-and-edit: open the app with the detail editor
   // already on the given item.
   function openItem(id) {
-    if (id) root.launchApp(["open-item", String(id)])
+    if (!id) return
+    root.close()
+    root.summonFullscreen({ action: "openItem", id: String(id) })
   }
 
   // The panel's Enter: hand one task to the full view, landing on Today with
@@ -83,7 +92,7 @@ BarWidget {
   function editItem(id) {
     if (!id) return
     root.close()
-    root.launchApp(["edit-item", String(id)])
+    root.summonFullscreen({ action: "editItem", id: String(id) })
   }
 
   function injectPanel() {
@@ -151,7 +160,7 @@ BarWidget {
     function toggle(): void { root.togglePanel() }
     function capture(): void { root.open(); if (root.panel) root.panel.focusCapture() }
     function refresh(): void { root.refresh() }
-    // The full view lives in the standalone app: these open it, focused.
+    // The full view is managed as a shell overlay.
     function fullscreen(): void { root.openFullscreen() }
     function closeFullscreen(): void { root.closeFullscreen() }
     function toggleFullscreen(): void { root.toggleFullscreen() }

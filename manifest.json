@@ -2,16 +2,19 @@
   "schemaVersion": 1,
   "id": "com.auino.omagtd",
   "name": "OmaGTD",
-  "version": "0.9.4",
+  "version": "0.10.0",
   "author": "Enrico Cambiaso",
   "license": "MIT",
-  "description": "Getting Things Done for Omarchy, modelled on OmniFocus. A bar pill that shows the inbox and the next actions, a keyboard-driven panel over what is due today, a fullscreen view for the full five-step GTD workflow — clarify, organize, reflect, engage — and a sqlite3 database underneath. Projects/areas, contexts as tags, waiting, someday/maybe, recurring actions, defer/due forecasting, an internal calendar, and OmniFocus-style review counters. Ships a `gtd` CLI so every step is scriptable and bindable to a hotkey.",
+  "description": "Getting Things Done for Omarchy, modelled on OmniFocus. A bar pill that shows the inbox and the next actions, a keyboard-driven panel over what is due today, a fullscreen view for the full five-step GTD workflow \u2014 clarify, organize, reflect, engage \u2014 and a sqlite3 database underneath. Projects/areas, contexts as tags, waiting, someday/maybe, recurring actions, defer/due forecasting, an internal calendar, and OmniFocus-style review counters. Ships a `gtd` CLI so every step is scriptable and bindable to a hotkey.",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "overlay"
   ],
   "entryPoints": {
-    "barWidget": "BarWidget.qml"
+    "barWidget": "BarWidget.qml",
+    "overlay": "FullscreenOverlay.qml"
   },
+  "keepLoaded": true,
   "barWidget": {
     "displayName": "OmaGTD",
     "description": "Inbox and next-action counts in the bar; the panel is what is due today.",

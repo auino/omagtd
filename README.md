@@ -44,20 +44,20 @@ Remove it with:
 omarchy plugin remove com.auino.omagtd
 ```
 
-## The standalone app
+## Full workflow overlay
 
-The full five-step workflow opens as a real window, independent of the bar. It
-runs in its own quickshell process (so it survives shell restarts) and is
-launched through `bin/omagtd-app` inside the plugin folder:
+The full five-step workflow is a Quattro-managed fullscreen overlay inside the
+existing Omarchy shell process. The bar widget summons it directly; no second
+Quickshell process is started. The optional `omagtd-app` command is only a
+convenience wrapper around the Omarchy shell IPC:
 
 ```bash
-~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app            # open the app
+~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app            # open the overlay
 ~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app view today # open on a view
-~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app quit       # quit the app
+~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app quit       # close the overlay
 ```
 
-To launch it like a normal program, symlink it onto your PATH and install the
-desktop entry:
+To invoke it from the terminal, symlink the wrapper onto your PATH:
 
 ```bash
 ln -s ~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app ~/.local/bin/omagtd-app
@@ -135,12 +135,11 @@ gtd settings theme of-light    # fullscreen palette: omarchy, of-light or of-dar
 A value of `0` keeps things forever. The bar widget has its own preferences in
 the plugin manager (inbox/next counts, compact mode, refresh interval).
 
-The `theme` setting only affects the standalone fullscreen app, which paints
-itself in its own palette. The default `omarchy` follows the active desktop
-theme; `of-light` and `of-dark` pin it to an OmniFocus-inspired light or dark
-palette (backgrounds, text, accents and status colours, plus a proportional
-font and rounded corners). The bar pill and the panel always follow the desktop
-theme.
+The `theme` setting controls the fullscreen overlay palette. The default
+`omarchy` follows the active desktop theme; `of-light` and `of-dark` select
+OmniFocus-inspired light or dark palettes for the overlay. These palette
+choices are local to OmaGTD and do not change Omarchy's shared theme. The bar
+pill and quick panel always follow the desktop theme.
 
 ## Development
 
@@ -148,16 +147,13 @@ theme.
 python3 -m unittest tests.test_gtd   # from the plugin root
 ```
 
-The UI follows Omarchy's shell module conventions: the bar widget and panel
-use the `qs.Commons` / `qs.Ui` modules that Omarchy ships with the shell. The
-standalone app vendors copies of those modules as plain directories
-(`app/Commons` and `app/Ui`, with their `qmldir`s) so it can run in its own
-quickshell process, where the shell-shipped modules are not loaded.
+The bar widget, quick panel, and fullscreen overlay use the `qs.Commons` /
+`qs.Ui` modules from the running Omarchy shell. The overlay loads the shared
+fullscreen content in that same shell process.
 
 `GtdTheme.qml` exists twice: the root copy is shared by the bar widget and
-panel, while `app/GtdTheme.qml` is the fullscreen app's own and carries the
-extra preset machinery. Keep the two in step when changing the status colours
-or the row glyphs.
+panel, while `app/GtdTheme.qml` supplies the fullscreen overlay's local palette
+and extra preset colors. Keep the status colors and row glyphs aligned.
 
 ## License
 

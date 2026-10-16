@@ -82,15 +82,18 @@ Currently, interaction is quite limited, at least in the current version of the 
 While apps like OmniFocus use a cloud-based service to manage sync across devices, OmaGTD makes use of a local SQLite3 database.
 Therefore, interaction between different devices can still be done, but it requires CLI-based commands (e.g., integrated with `cron`), to either create tasks or export them, e.g., by using a shared folder.
 
-Sample task creation command:
+Sample task creation command, of a new task in the `Personal>Errands` project (`Errands` is a sub-project under `Personal`), assigned to the `#home>kitchen` context, deferred until tomorrow and due on next friday:
 ```
-
+gtd capture "Fix the sink /Personal>Errands/ #home>kitchen <tomorrow >friday"
 ```
+For a full list of argumens, just run `gtd`.
 
 Sample tasks export command:
 ```
-~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd export-day --format pdf -o export.pdf
+gtd export-day --format pdf -o export.pdf
 ```
+
+assuming `gtd` points to `~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd`.
 
 Further extensions may, e.g., implement a web service.
 

@@ -30,7 +30,7 @@ import qs.Ui
 FocusScope {
   id: root
 
-  // Injected by BarWidget.qml (null in the standalone app).
+  // Injected by the plugin surfaces when available.
   property var bar: null
   property var settings: null
   property var hostWidget: null
@@ -43,6 +43,7 @@ FocusScope {
   // repaints the whole view in one place. "omarchy" passes the desktop theme
   // straight through.
   readonly property color textColor: gtdTheme.text
+  readonly property color surfaceBackground: gtdTheme.background
   readonly property color dim: gtdTheme.dim
   readonly property color line: gtdTheme.line
   readonly property color urgent: gtdTheme.urgent
@@ -73,10 +74,9 @@ FocusScope {
   property bool opened: false
   property bool manageIpc: false
   property bool popoutSwitchClosing: false
-  // Set by the standalone app host (App.qml): there is no overlay to hide, so
-  // asking to close means leaving the app, and the surface is never closed.
-  property bool appMode: false
-  signal quitRequested()
+  // Set by the fullscreen overlay so Escape requests a shell-managed close.
+  property bool fullscreenMode: false
+  signal closeRequested()
 
   function open() {
     if (root.opened) return
@@ -101,9 +101,9 @@ FocusScope {
   function closeForPopoutSwitch() { root.close() }
 
   function handleCloseRequested() {
-    // The standalone app has nothing underneath it to return to, so the close
-    // gesture leaves it; the panel-hosted overlay just hides.
-    if (root.appMode) root.quitRequested()
+    // The fullscreen overlay delegates close to its host; the quick panel
+    // simply closes in place.
+    if (root.fullscreenMode) root.closeRequested()
     else root.close()
   }
 
@@ -2103,8 +2103,7 @@ readonly property var primaryViews: [
         }
 
   // A toast in the shell's OSD — the same card the launch message uses. The
-  // shell may not be running (the standalone app has no shell), so the call
-  // goes through the quiet IPC wrapper, which fails silently.
+  // shell may be shutting down, so this call fails quietly.
   function showOsd(icon, message) {
     try {
       Quickshell.execDetached(
@@ -2113,9 +2112,8 @@ readonly property var primaryViews: [
     } catch (e) { }
   }
 
-  // The bar is a separate quickshell process, so it does not see a write this
-  // app makes. Ask it to re-read the counts, which re-runs the pill text and
-  // its colour. Quiet: the standalone app has no shell to answer.
+  // The bar pill does not share this instance's model state. Ask it to re-read
+  // the counts, which re-runs the pill text and its colour.
   function refreshBar() {
     try {
       Quickshell.execDetached(
@@ -2506,7 +2504,7 @@ readonly property var primaryViews: [
   // the cursor, or save the editor when a field or a column below is in play.
   function activateCursor() {
     if (root.settingsOpen) {
-      if (root.appMode) root.closeSettingsPane()
+      if (root.fullscreenMode) root.closeSettingsPane()
       else root.close()
       return
     }
@@ -2625,9 +2623,8 @@ readonly property var primaryViews: [
 
   // The open button is offered where a link actually lives: beside the link
   // field when it holds a URL, and on the attachment row when the stored
-  // attachment is itself a link. xdg-open, not openUrlExternally: the
-  // standalone quickshell instance never registers with the desktop portal,
-  // so Qt's openUrl is a silent no-op there.
+  // attachment is itself a link. Use xdg-open if Qt's portal URL handler is
+  // unavailable.
   function openAttachment() {
     var att = String(root.editAttachments || "").trim()
     var uri = root.attachmentIsLink() ? att : String(root.editLink || "").trim()

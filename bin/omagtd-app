@@ -1,51 +1,31 @@
 #!/bin/bash
 
-# omagtd-app: start the OmaGTD application (a real window, not the layer-shell
-# overlay), then forward a command to the running instance.
-#
-# The app lives in its own quickshell process so it survives the bar and keeps
-# its place in the background. `-n` makes it a singleton; the retry loop waits
-# for its IPC target to answer, since starting is async.
-#
-#   omagtd-app              # ensure running and give it keyboard focus
-#   omagtd-app view today   # ensure running, open the given view
-#   omagtd-app open-item y8xq0pv7   # ensure running, open the editor on an item
-#   omagtd-app edit-item y8xq0pv7   # ensure running, land on the task in Today
-#   omagtd-app quit         # quit the app if it is running
+# omagtd-app is a compatibility CLI name: it routes to OmaGTD's overlay in
+# the already-running Omarchy shell and never starts a Quickshell process.
+set -euo pipefail
 
-set -e
-
-PLUGIN="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$PLUGIN/app/App.qml"
 TARGET="com.auino.omagtd"
-
-# Start if no instance of this config is running; no-op otherwise.
-LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omagtd"
-mkdir -p "$LOG_DIR"
-setsid quickshell -n -p "$APP" >> "$LOG_DIR/app.log" 2>&1 < /dev/null &
-
-# Wait until the IPC target answers (the process must be up before forwarding).
-for _ in $(seq 1 40); do
-  if timeout 2 quickshell ipc -p "$APP" call "$TARGET" ping >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.1
-done
 
 case "${1:-}" in
   view)
-    quickshell ipc -p "$APP" call "$TARGET" view "${2:-today}"
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"action":"view","name":sys.argv[1]}))' "${2:-today}")"
+    exec omarchy-shell shell summon "$TARGET" "$payload"
     ;;
   open-item)
-    quickshell ipc -p "$APP" call "$TARGET" openItem "$2"
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"action":"openItem","id":sys.argv[1]}))' "${2:?item id required}")"
+    exec omarchy-shell shell summon "$TARGET" "$payload"
     ;;
   edit-item)
-    quickshell ipc -p "$APP" call "$TARGET" editItem "$2"
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"action":"editItem","id":sys.argv[1]}))' "${2:?item id required}")"
+    exec omarchy-shell shell summon "$TARGET" "$payload"
     ;;
-  quit)
-    quickshell ipc -p "$APP" call "$TARGET" quit || true
+  quit|close)
+    exec omarchy-shell shell hide "$TARGET"
+    ;;
+  toggle)
+    exec omarchy-shell shell toggle "$TARGET" '{}'
     ;;
   *)
-    quickshell ipc -p "$APP" call "$TARGET" focus || true
+    exec omarchy-shell shell summon "$TARGET" '{}'
     ;;
 esac

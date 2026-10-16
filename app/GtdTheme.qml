@@ -11,11 +11,8 @@ import qs.Commons
 // come round — are read from the active Omarchy theme, so a flagged task is
 // the same orange as the rest of the desktop.
 //
-// A preset may take over instead: the app then paints in its own OmniFocus-
-// inspired palette and stops following the desktop. The fullscreen app runs in
-// its own quickshell instance, so `applyPreset` can pin the shared Color and
-// Style singletons without touching the desktop's own surfaces; "omarchy"
-// leaves them exactly as they were.
+// A preset may take over the fullscreen surface's local colors. This object
+// never writes to the shell's shared Color or Style singletons.
 QtObject {
   id: root
 
@@ -120,11 +117,8 @@ QtObject {
     onFileChanged: root.refresh()
   }
 
-  // Read the active theme again. A preset owns the palette and needs nothing;
-  // otherwise this re-reads the app's own status colours *and* reloads the
-  // shared Color/Style singletons. The running shell is told about a theme
-  // change over IPC, but this app is its own quickshell instance and never hears
-  // that, so it has to read the files itself to keep up with the desktop.
+  // Read the active theme again when following Omarchy. The shell owns the
+  // shared Color and Style objects; this plugin only reads their current state.
   function refresh() {
     if (root.themed) return
     colorsFile.reload()
@@ -133,48 +127,11 @@ QtObject {
     Style.refresh()
   }
 
-  // ---- Preset application -------------------------------------------------
-  //
-  // A preset is not just the surface colours above: it also pins the
-  // typography, the corner rounding and the shared Color/Style singletons so
-  // the kit's buttons and fields follow. The fullscreen app has its own
-  // quickshell instance, so this never reaches the desktop.
-  property bool _pinned: false
-
+  // ---- Local preset selection --------------------------------------------
+  // Keep custom palette choices local to this plugin surface. Mutating Color
+  // or Style here would change the rest of the user's Omarchy shell.
   function applyPreset(name) {
     root.preset = name || "omarchy"
-    root._applyStyle()
-    // The desktop colours load from file a beat after startup; re-assert the
-    // preset once more so a late file load cannot paint over it.
-    if (root.themed) root._reassert.restart()
-  }
-
-  function _applyStyle() {
-    if (root.themed) {
-      Color.foreground = root.p.text
-      Color.background = root.p.background
-      Color.accent = root.p.accent
-      Color.urgent = root.p.urgent
-      Style.fontFamily = root.p.font
-      Style.cornerRadius = root.p.radius
-      root._pinned = true
-    } else if (root._pinned) {
-      // Hand the singletons back to the desktop and reload its colours, plus
-      // the app's own status colours (they may have moved while a preset was
-      // in charge and `refresh` was skipping the file).
-      root.colorsFile.reload()
-      Color.colorsFile.reload()
-      Color.shellFile.reload()
-      Style.fontFamily = "monospace"
-      Style.refresh()
-      root._pinned = false
-    }
-  }
-
-  property Timer _reassert: Timer {
-    interval: 400
-    repeat: false
-    onTriggered: root._applyStyle()
   }
 
   // "YYYY-MM-DD HH:MM", the shape a due or defer date is kept in, so a
