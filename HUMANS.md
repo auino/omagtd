@@ -4,7 +4,7 @@
 
 The program comes from the interest to leave macOS (if you are interested, you can see my [auinobackonlinux@mastodon.social](https://mastodon.social/@auinobackonlinux) account on Mastodon, documenting the process).
 In my attempts to move back (from 2011) to Linux, I discovered [Omarchy Linux](https://omarchy.org).
-Due to its AI and agents oriented approach, I found it an interesting approach.
+Due to its AI and agents oriented approach, I found it an interesting distro.
 
 ### The need
 
@@ -56,6 +56,8 @@ the screen is divided in multiple sections:
 
 In full screen mode, left-to-right parts navigation uses left/right arrows, while navigation across elements in the same part uses tab or up/down arrows.
 
+Other shortcuts are visible in the app itself.
+
 ### New task creation syntax
 
 Tasks can be created by using a single text syntax populating specific fields: the basic syntax is the following one:
@@ -80,14 +82,26 @@ Currently, interaction is quite limited, at least in the current version of the 
 While apps like OmniFocus use a cloud-based service to manage sync across devices, OmaGTD makes use of a local SQLite3 database.
 Therefore, interaction between different devices can still be done, but it requires CLI-based commands (e.g., integrated with `cron`), to either create tasks or export them, e.g., by using a shared folder.
 
+Sample task creation command:
+```
+
+```
+
+Sample tasks export command:
+```
+~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd export-day --format pdf -o export.pdf
+```
+
+Further extensions may, e.g., implement a web service.
+
 ### The limitations
 
 While the app represents a usable solution, it lacks of relevant features.
 At first, the integration with mobile and other systems (e.g., through a web interface) is missing.
 Also, no sync between devices is implemented.
 The GUI follows the Omarchy ecosystem, but it is not appealing as the OmniFocus GUI.
-Review is not properly implemented (yet).
-For other bugs, just report them as issues in this repository.
+Review is not properly implemented (yet), so, in the current version of the app, it is not properly implementing a good GTD review.
+For bugs, just report them as issues in this repository.
 Please also report any suggestion or improvement.
 
 Given the current status of the app, please use it at your own risk.

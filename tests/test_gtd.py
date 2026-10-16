@@ -353,7 +353,7 @@ class Organize(TempStore):
     def test_untag_and_clearing_dates(self):
         self.capture("Thing", tags=["home", "work"])
         other = core.find(self.store, "Thing")
-        core.organize(self.store, other["id"], defer="tomorrow", due="friday")
+        core.organize(self.store, other["id"], defer="tomorrow", due="+1w")
         core.organize(self.store, other["id"], drop_tags=["work"],
                       clear_defer=True, clear_due=True)
         item = core.get(self.store, other["id"])
@@ -846,7 +846,7 @@ class OmniFocusXML(TempStore):
         core.ensure_container(self.store, "Work", core.AREA)
         core.ensure_container(self.store, "Q4 audit", core.PROJECT, area="Work")
         self.live = self.capture("Reconcile the ledger", project="Q4 audit",
-                                 tags=["work"], priority=1, defer="tomorrow", due="friday")
+                                 tags=["work"], priority=1, defer="tomorrow", due="+1w")
         self.finished = self.capture("Sign the contract", project="Q4 audit")
         core.engage(self.store, self.finished["id"], "done")
         self.floating = self.capture("Email Ana")

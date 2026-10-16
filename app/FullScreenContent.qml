@@ -843,13 +843,41 @@ readonly property var primaryViews: [
   }
 
   // Point the middle cursor at a row and let the right column follow it, so a
-  // single click (or a j/k step) both selects and reveals the editor.
+  // single click (or a j/k step) both selects and reveals the editor. A context
+  // row is the exception: picking one drills into that context, its tasks
+  // filling the middle column exactly as the left switcher does, rather than
+  // pushing them into the right column.
   function selectRow(index) {
     if (index < 0 || index >= root.rows.length) return
+    var row = root.rows[index]
+    if (row && row.kind === "tag") { root.focusContextRow(row); return }
     root.topFocused = false
     root.column = 1
     root.rowSelected = index
     root.reloadDetail()
+  }
+
+  // Focus a context picked from the middle column: swap the left tree to
+  // contexts, land its cursor on the matching row, and let the middle column
+  // reload the context's own task list. The nav view's flat context list is
+  // left behind; asking for it again (its key, or the switcher) brings it back.
+  function focusContextRow(row) {
+    var name = row.name || row.title
+    if (!name) return
+    root.topFocused = false
+    root.projectFocus = null
+    root.leftMode = "contexts"
+    root.column = 0
+    root.leftSection = "tree"
+    for (var i = 0; i < root.contextRows.length; i++) {
+      if (root.contextRows[i].name === name) {
+        root.contextSelected = i
+        return
+      }
+    }
+    // Not in the tree (a filtered-out context): focus it straight away.
+    root.contextFocus = row.raw || row
+    root.reloadList()
   }
 
   // Make the editor show whatever the middle cursor now sits on, loading it
@@ -2492,6 +2520,11 @@ readonly property var primaryViews: [
     if (root.column === 0 && root.leftSection === "menu") {
       root.pickViewByKey(root.primaryKeys[Math.max(0, root.menuSelected)])
       return
+    }
+    // A context row in the middle column drills in, the same as clicking it.
+    if (root.column === 1) {
+      var row = root.selectedRow()
+      if (row && row.kind === "tag") { root.focusContextRow(row); return }
     }
     root.saveEdits()
   }
