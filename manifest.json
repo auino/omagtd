@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "com.auino.omagtd",
   "name": "OmaGTD",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "author": "Enrico Cambiaso",
   "license": "MIT",
-  "description": "Getting Things Done for Omarchy, modelled on OmniFocus. A bar pill that shows the inbox and the next actions, a keyboard-driven panel over what is due today, a fullscreen view for the full five-step GTD workflow \u2014 clarify, organize, reflect, engage \u2014 and a sqlite3 database underneath. Projects/areas, contexts as tags, waiting, someday/maybe, recurring actions, defer/due forecasting, an internal calendar, and OmniFocus-style review counters. Ships a `gtd` CLI so every step is scriptable and bindable to a hotkey.",
+  "description": "Getting Things Done for Omarchy, modelled on OmniFocus. A keyboard-driven bar pill and fullscreen workflow for capture, clarify, organize, reflect, and engage, backed by SQLite and a scriptable `gtd` CLI. Includes projects, contexts, waiting, someday/maybe, recurring actions, defer and due dates, and review counters.",
   "kinds": [
     "bar-widget",
     "overlay"
@@ -75,7 +75,7 @@
         "max": 500,
         "step": 1,
         "defaultValue": 10,
-        "description": "The pill turns red once the inbox holds this many items \u2014 the signal to clarify instead of capture."
+        "description": "The pill turns red once the inbox holds this many items — the signal to clarify instead of capture."
       },
       {
         "key": "pollIntervalSec",
