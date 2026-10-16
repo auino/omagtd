@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.auino.omagtd",
   "name": "OmaGTD",
-  "version": "0.10.4",
+  "version": "0.10.5",
   "author": "Enrico Cambiaso",
   "license": "MIT",
   "description": "Getting Things Done for Omarchy, modelled on OmniFocus. A keyboard-driven bar pill and fullscreen workflow for capture, clarify, organize, reflect, and engage, backed by SQLite and a scriptable `gtd` CLI. Includes projects, contexts, waiting, someday/maybe, recurring actions, defer and due dates, and review counters.",

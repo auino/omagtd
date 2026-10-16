@@ -1157,7 +1157,14 @@ readonly property var primaryViews: [
 
   function flattenContexts(data) {
     var out = []
-    var places = data && data.items ? data.items : []
+    var places = data && data.items ? data.items.slice() : []
+    places.sort(function(a, b) {
+      var na = String(a.name || "").toLowerCase()
+      var nb = String(b.name || "").toLowerCase()
+      if (na < nb) return -1
+      if (na > nb) return 1
+      return 0
+    })
     for (var i = 0; i < places.length; i++) {
       var full = places[i].name || ""
       var depth = (full.match(/>/g) || []).length
@@ -1400,21 +1407,54 @@ readonly property var primaryViews: [
     return !!item && (item.status === "done" || item.status === "archived")
   }
 
+  // Case-insensitive name order, so each tree reads alphabetically however the
+  // backend happened to hand the rows over.
+  function byTitle(a, b) {
+    var na = String((a && a.title) || "").toLowerCase()
+    var nb = String((b && b.title) || "").toLowerCase()
+    if (na < nb) return -1
+    if (na > nb) return 1
+    return 0
+  }
+
   function flattenTree(data) {
     var out = []
     if (!data) return out
-    var areas = data.areas || []
+    var areas = (data.areas || []).slice()
+    // Flatten by collecting all top-level entries (areas and orphaned projects)
+    // and sorting them alphabetically by their display title
+    var entries = []
     for (var i = 0; i < areas.length; i++) {
       var area = areas[i]
-      var titled = !!area.title
+      var titled = !!(area && area.title && String(area.title).trim() !== '')
       if (titled) {
+        entries.push({ kind: "area", area: area, title: area.title })
+      } else {
+        // Orphaned projects from unnamed area - add them as project entries at top level
+        var projects = (area.projects || []).slice()
+        projects.sort(root.byTitle)
+        for (var p = 0; p < projects.length; p++) {
+          entries.push({ kind: "orphan", project: projects[p], title: projects[p].title })
+        }
+      }
+    }
+    entries.sort(function(a, b) {
+      return root.byTitle(a, b)
+    })
+    for (var j = 0; j < entries.length; j++) {
+      var entry = entries[j]
+      if (entry.kind === "area") {
+        var area = entry.area
         out.push({ kind: "area", depth: 0, id: area.id || "",
                    title: area.title,
                    meta: (area.projects || []).length + " projects", raw: area })
+        var projects = (area.projects || []).slice()
+        projects.sort(root.byTitle)
+        for (var p2 = 0; p2 < projects.length; p2++)
+          root.pushProject(out, projects[p2], 1)
+      } else if (entry.kind === "orphan") {
+        root.pushProject(out, entry.project, 0)
       }
-      var projects = area.projects || []
-      for (var p = 0; p < projects.length; p++)
-        root.pushProject(out, projects[p], titled ? 1 : 0)
     }
     return out
   }
@@ -1425,7 +1465,8 @@ readonly property var primaryViews: [
   // whichever project is selected. A folded project keeps its own row and,
   // like a file tree, hides everything under it.
   function pushProject(out, project, depth) {
-    var subs = project.projects || []
+    var subs = (project.projects || []).slice()
+    subs.sort(root.byTitle)
     var counts = root.subtreeCounts(project)
     var folded = !!root.collapsed[project.id]
     out.push({ kind: "project", depth: depth, id: project.id, title: project.title,

@@ -2550,6 +2550,7 @@ def _nest_projects(projects: list[dict],
 
     def roll(node: dict) -> tuple[int, int]:
         total, late = node["_total"], node["_late"]
+        node["projects"].sort(key=lambda c: (c.get("title") or "").lower())
         for child in node["projects"]:
             child_total, child_late = roll(child)
             total += child_total
@@ -2558,6 +2559,7 @@ def _nest_projects(projects: list[dict],
         del node["_total"], node["_late"]
         return total, late
 
+    tops.sort(key=lambda c: (c.get("title") or "").lower())
     for top in tops:
         roll(top)
     return tops
@@ -2608,6 +2610,7 @@ def containers(store: Store) -> dict:
 
     groups = list(area_by_id.values()) + [unnamed]
     for group in groups:
+        group["projects"].sort(key=lambda c: (c.get("title") or "").lower())
         group["total"] = sum(p["total"] for p in group["projects"])
         group["late"] = sum(p["late"] for p in group["projects"])
 
