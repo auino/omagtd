@@ -6,6 +6,8 @@ an inbox, clarify, organize, reflect, and engage — projects/areas, contexts
 (tags), waiting, someday/maybe, recurring actions, and an internal
 calendar, backed by a sqlite3 database and scriptable through a `gtd` CLI.
 
+![OmaGTD plugin preview](preview.png)
+
 ## Human-generated content
 
 As this is an AI-generated program and content, for human-generated
