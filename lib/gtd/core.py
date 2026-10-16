@@ -833,15 +833,22 @@ def _update(store: Store, item_id: str, **fields) -> None:
     store.run(f"UPDATE items SET {columns} WHERE id = ?", (*fields.values(), item_id))
 
 
-def _field(value):
-    """Normalize a date-ish argument: datetime, date, or a parseable string."""
+def _field(value, *, defer=False):
+    """Normalize a date-ish argument: datetime, date, or a parseable string.
+
+    `defer` picks the configured defer clock for a value that carries no time
+    of its own — a bare date or a word like "tomorrow" — so the `--defer` flag
+    lands on the same hour as the inline `<tomorrow` form. A value that already
+    has a time (a datetime from the quick parser) keeps it.
+    """
     if value in (None, ""):
         return None
     if isinstance(value, _dt.datetime):
         return dates.to_stamp(value)
     if isinstance(value, _dt.date):
-        return dates.to_stamp(value)
-    parsed = dates.parse_when(str(value))
+        clock = dates.DEFAULT_DEFER_TIME if defer else dates.DEFAULT_TIME
+        return dates.to_stamp(value, clock)
+    parsed = dates.parse_when(str(value), defer=defer)
     if parsed is None:
         raise GtdError(f"cannot read date: {value!r}")
     return parsed.strftime("%Y-%m-%d %H:%M")
@@ -954,7 +961,7 @@ def capture(store: Store, text: str | None = None, *, title=None, notes: str = "
 
     stamp = now()
     item_id = new_id()
-    defer_at, due_at = _field(defer), _field(due)
+    defer_at, due_at = _field(defer, defer=True), _field(due)
     _validate_dates(defer_at, due_at)
     _undo_snapshot_item(store, item_id)   # records "did not exist" for undo
     store.run(
@@ -1044,7 +1051,7 @@ def clarify(store: Store, ref: str, outcome: str, *, project=None, area=None,
             raise GtdError("a deferred action needs a defer date — pass --defer")
 
     if defer is not None:
-        fields["defer_at"] = _field(defer)
+        fields["defer_at"] = _field(defer, defer=True)
     if due is not None:
         fields["due_at"] = _field(due)
     _validate_dates(fields.get("defer_at", item["defer_at"]),
@@ -1109,7 +1116,7 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
         remove_tags(store, item["id"], drop_tags)
 
     if defer is not None:
-        fields["defer_at"] = _field(defer)
+        fields["defer_at"] = _field(defer, defer=True)
     if clear_defer:
         fields["defer_at"] = None
     if due is not None:
@@ -1241,7 +1248,8 @@ def engage(store: Store, ref: str, action: str, *, when=None, priority=None,
     if action == "defer":
         if when is None and defer is None:
             raise GtdError("defer needs a date")
-        _update(store, item["id"], defer_at=_field(when if when is not None else defer))
+        _update(store, item["id"],
+                defer_at=_field(when if when is not None else defer, defer=True))
         store.log(item["id"], "defer", str(when if when is not None else defer))
         return get(store, item["id"])
 
@@ -1394,7 +1402,7 @@ def create_child(store: Store, parent_id: str | None, title: str, **fields) -> d
         (item_id, title, (fields.get("notes") or "").strip(),
          parent["id"] if parent else None, status,
          _priority(fields.get("priority")),
-         _field(fields.get("defer")), _field(fields.get("due")),
+         _field(fields.get("defer"), defer=True), _field(fields.get("due")),
          _minutes(fields.get("duration")),
          _encode_repeat(fields.get("repeat")),
          fields.get("review") if fields.get("review") in REVIEW_INTERVALS else "never",

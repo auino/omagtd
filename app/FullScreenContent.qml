@@ -78,6 +78,12 @@ FocusScope {
   property bool fullscreenMode: false
   signal closeRequested()
 
+  // Closing the fullscreen view asks first. Escape raises this; while it is up
+  // Escape is inert (the user just pressed it), Space takes the highlighted
+  // button, and arrows or Tab move between Confirm (the default) and Cancel.
+  property bool confirmCloseOpen: false
+  property int confirmCloseIndex: 1
+
   function open() {
     if (root.opened) return
     root.opened = true
@@ -101,8 +107,27 @@ FocusScope {
   function closeForPopoutSwitch() { root.close() }
 
   function handleCloseRequested() {
-    // The fullscreen overlay delegates close to its host; the quick panel
-    // simply closes in place.
+    // The fullscreen overlay delegates close to its host, so ask there; the
+    // quick panel simply closes in place.
+    if (root.fullscreenMode) root.confirmCloseRequest()
+    else root.close()
+  }
+
+  // Raise the close confirmation with Confirm highlighted, and hand the
+  // keyboard to it so Escape can no longer reach the close handler.
+  function confirmCloseRequest() {
+    if (root.confirmCloseOpen) return
+    root.confirmCloseIndex = 1
+    root.confirmCloseOpen = true
+    Qt.callLater(function() { confirmCloseFocus.forceActiveFocus() })
+  }
+
+  // Take the highlighted button: Confirm (1) closes the app, Cancel (0) puts
+  // the keyboard back where it was.
+  function confirmCloseActivate() {
+    var confirmed = root.confirmCloseIndex === 1
+    root.confirmCloseOpen = false
+    if (!confirmed) { keyCatcher.forceActiveFocus(); return }
     if (root.fullscreenMode) root.closeRequested()
     else root.close()
   }
@@ -2828,6 +2853,7 @@ readonly property var primaryViews: [
       || linkField.activeFocus
       || searchField.activeFocus || projectNameField.activeFocus
       || importField.activeFocus || ofField.activeFocus || zipField.activeFocus
+      || root.confirmCloseOpen
     onCloseRequested: root.handleCloseRequested()
     onTabRequested: function(direction) { root.tabStep(direction) }
     onMoveRequested: function(dx, dy) {
@@ -5457,6 +5483,121 @@ Row {
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
+      }
+    }
+  }
+
+  // ---- Close confirmation
+  // A fullscreen Escape asks before the shell closes the view. The scrim
+  // swallows pointer input, the card sits centred, and the FocusScope below
+  // owns the keys: Escape is inert, Space takes the highlighted button, and
+  // the arrows or Tab move between Cancel and Confirm (Confirm is the default).
+  Item {
+    id: closeConfirm
+    anchors.fill: parent
+    visible: root.confirmCloseOpen
+    z: 100
+
+    Rectangle {
+      anchors.fill: parent
+      color: Util.alpha(root.surfaceBackground, 0.7)
+    }
+
+    // Swallow clicks on the scrim so the screen behind cannot be reached.
+    MouseArea { anchors.fill: parent }
+
+    Rectangle {
+      id: closeCard
+      width: Math.min(parent.width - Style.space(32), Style.space(400))
+      height: closeBody.implicitHeight + Style.space(36)
+      anchors.centerIn: parent
+      color: root.surfaceBackground
+      border.width: Style.normalBorderWidth
+      border.color: root.accent
+      radius: Style.cornerRadius
+
+      Column {
+        id: closeBody
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: Style.space(18)
+        spacing: Style.spacing.md
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: "Close OmaGTD?"
+          color: root.textColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+          font.bold: true
+        }
+
+        Text {
+          width: parent.width
+          textFormat: Text.PlainText
+          wrapMode: Text.WordWrap
+          text: "This closes the full-screen view. Press space to confirm, "
+                + "or use the arrows or tab to choose."
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Row {
+          anchors.right: parent.right
+          spacing: Style.space(10)
+
+          Repeater {
+            model: [ { label: "Cancel", confirm: false },
+                     { label: "Confirm", confirm: true } ]
+
+            Button {
+              required property var modelData
+              readonly property int slot: modelData.confirm ? 1 : 0
+              text: modelData.label
+              bordered: true
+              selected: root.confirmCloseIndex === slot
+              foreground: root.textColor
+              accent: modelData.confirm ? root.urgent : root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: {
+                root.confirmCloseIndex = slot
+                root.confirmCloseActivate()
+              }
+              onHovered: function(hovered) {
+                if (hovered) root.confirmCloseIndex = slot
+              }
+            }
+          }
+        }
+      }
+    }
+
+    FocusScope {
+      id: confirmCloseFocus
+      anchors.fill: parent
+      focus: root.confirmCloseOpen
+
+      Keys.onPressed: function(event) {
+        // Escape must not close the app — the user just pressed it to get
+        // here, so a second press is not the confirmation.
+        if (event.key === Qt.Key_Escape) { event.accepted = true; return }
+        if (event.key === Qt.Key_Left || event.key === Qt.Key_Right
+            || event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+          root.confirmCloseIndex = root.confirmCloseIndex === 1 ? 0 : 1
+          event.accepted = true
+          return
+        }
+        if (event.key === Qt.Key_Space || event.key === Qt.Key_Return
+            || event.key === Qt.Key_Enter) {
+          root.confirmCloseActivate()
+          event.accepted = true
+          return
+        }
       }
     }
   }

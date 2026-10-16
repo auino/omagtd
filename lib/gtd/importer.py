@@ -105,7 +105,8 @@ def _stamp(value, *, defer: bool = False) -> str | None:
         # wall time, which is the time the user actually meant.
         return value.replace(tzinfo=None).strftime("%Y-%m-%d %H:%M")
     if isinstance(value, _dt.date):
-        return dates.to_stamp(value)
+        clock = dates.DEFAULT_DEFER_TIME if defer else dates.DEFAULT_TIME
+        return dates.to_stamp(value, clock)
     text = str(value).strip()
     # .ofocusmx writes "2026-10-05 09:00:00 +0000", which no ISO parser in the
     # standard library takes verbatim.

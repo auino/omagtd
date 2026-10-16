@@ -246,6 +246,18 @@ class Capture(TempStore):
             self.capture("Too late to even start", defer="2026-05-20",
                          due="2026-05-10")
 
+    def test_a_bare_defer_lands_on_the_defer_clock(self):
+        # The --defer flag carries a word, not a datetime, so it has to pick
+        # the defer clock exactly as the inline `<tomorrow` form does.
+        dates.configure(due_time="18:00", defer_time="09:00", time_format="24h")
+        try:
+            self.assertEqual(self.capture("Water the plants",
+                                          defer="tomorrow")["defer_at"][11:], "09:00")
+            self.assertEqual(self.capture("Post the forms",
+                                          due="tomorrow")["due_at"][11:], "18:00")
+        finally:
+            dates.configure(due_time="18:00", defer_time="09:00", time_format="24h")
+
 
 class Clarify(TempStore):
     def setUp(self):
@@ -336,6 +348,16 @@ class Organize(TempStore):
         self.assertEqual(item["tags"], ["home"])
         self.assertEqual(item["priority"], 1)
         self.assertEqual(item["due_at"], dates.to_stamp(dates.parse_when("friday")))
+
+    def test_a_bare_defer_lands_on_the_defer_clock(self):
+        dates.configure(due_time="18:00", defer_time="09:00", time_format="24h")
+        try:
+            item = core.organize(self.store, self.action["id"], defer="tomorrow")
+            self.assertEqual(item["defer_at"][11:], "09:00")
+            item = core.organize(self.store, self.action["id"], due="tomorrow")
+            self.assertEqual(item["due_at"][11:], "18:00")
+        finally:
+            dates.configure(due_time="18:00", defer_time="09:00", time_format="24h")
 
     def test_defer_after_the_deadline_is_refused_even_when_only_one_moves(self):
         item = core.organize(self.store, self.action["id"],
@@ -472,10 +494,21 @@ class Engage(TempStore):
 
     def test_defer_and_drop(self):
         deferred = core.engage(self.store, self.item["id"], "defer", when="+2w")
-        self.assertEqual(deferred["defer_at"], dates.to_stamp(dates.parse_when("+2w")))
+        self.assertEqual(deferred["defer_at"],
+                         dates.to_stamp(dates.parse_when("+2w", defer=True)))
         dropped = core.engage(self.store, self.item["id"], "drop")
         self.assertEqual(dropped["status"], "dropped")
         self.assertTrue(dropped["dropped_at"])
+
+    def test_a_bare_defer_lands_on_the_defer_clock(self):
+        dates.configure(due_time="18:00", defer_time="09:00", time_format="24h")
+        try:
+            item = core.engage(self.store, self.item["id"], "defer", when="tomorrow")
+            self.assertEqual(item["defer_at"][11:], "09:00")
+            item = core.engage(self.store, self.item["id"], "defer", defer="tomorrow")
+            self.assertEqual(item["defer_at"][11:], "09:00")
+        finally:
+            dates.configure(due_time="18:00", defer_time="09:00", time_format="24h")
 
     def test_unknown_action_is_rejected(self):
         with self.assertRaises(GtdError):
