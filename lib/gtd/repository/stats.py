@@ -37,9 +37,18 @@ SELECT
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) = date('now', 'localtime')) AS due_today,
   SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
-      AND i.due_at IS NOT NULL
-      AND substr(i.due_at, 1, 10) = date('now', 'localtime')
-      AND i.priority > 0) AS flagged_today,
+      AND i.priority > 0
+      AND (
+            (i.due_at IS NOT NULL
+               AND substr(i.due_at, 1, 10) = date('now', 'localtime'))
+         OR (i.defer_at IS NOT NULL
+             AND i.defer_at <= substr(date('now', 'localtime'), 1, 10) || ' 23:59'
+             AND i.due_at IS NOT NULL
+             AND substr(i.due_at, 1, 10) >= date('now', 'localtime'))
+      )
+      AND NOT (i.due_at IS NOT NULL
+               AND substr(i.due_at, 1, 10) = date('now', 'localtime')
+               AND substr(i.due_at, 1, 16) < ?)) AS flagged_today,
   SUM(i.kind = 'action' AND i.status NOT IN ('done', 'dropped', 'archived', 'trashed')
       AND i.due_at IS NOT NULL
       AND substr(i.due_at, 1, 10) = date('now', 'localtime')
@@ -78,7 +87,8 @@ WHERE p.kind = 'project' AND p.status = 'active'
 def counts(store: Store) -> dict:
     """Every number the bar pill and the panel header are made of."""
     month_ago = (_dt.datetime.now() - _dt.timedelta(days=30)).strftime(STAMP)
-    row = store.one(_ITEMS_SQL, (now(), month_ago, month_ago))
+    n = now()
+    row = store.one(_ITEMS_SQL, (n, n, month_ago, month_ago))
     data = {key: int(row[key] or 0) for key in row.keys()}
     # `focus_ten` is the first ten of next_actions, so its count is capped.
     data["ten"] = min(10, data["next"])

@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import os
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -24,7 +25,7 @@ import time
 import urllib.parse
 import zipfile
 
-from . import __version__, core, dates, exporter, importer, quick, review
+from . import __version__, core, dates, exporter, importer, quick, review, theme
 from .core import GtdError
 from .db import Store, db_path, now
 
@@ -999,19 +1000,31 @@ def _export_zip(args, out: Out, store: Store) -> dict:
     return {"ok": True, "output": target, "bytes": size}
 
 
-def cmd_export_day(args, out: Out, store: Store) -> dict:
-    """Write the commitments of one day to a file.
+def _invoked_command() -> str:
+    """The `gtd` command line this run was launched with, for the record.
 
-    The day, the format and the destination are all command-line arguments; the
-    file carries the date it was taken in, alongside the day it is about. The
-    four formats the user may choose are markdown, JSON, YAML and a printable
-    PDF, and the same structured document feeds every one, so a file's contents
-    do not depend on which of the four was asked for.
+    An export writes down how it was asked for, so a file read months later
+    still says which command produced it. The program is named `gtd` whatever
+    path it was reached by, and the arguments are quoted the way a shell would
+    accept them back.
+    """
+    argv = sys.argv[1:]
+    return "gtd" + (" " + shlex.join(argv) if argv else "")
+
+
+def _emit_export(args, out: Out, store: Store, document: dict,
+                 title: str | None = None) -> dict:
+    """Render one export document to whatever destination the arguments name.
+
+    Shared by `export-day` and `export-context`: the two commands collect a
+    different document but write it the same way, to standard out for a text
+    format and to a file otherwise, with the format taken from the flag or the
+    file's suffix.
     """
     fmt = exporter.format_for(getattr(args, "output", None), getattr(args, "fmt", None))
-    document = exporter.day_export(store, getattr(args, "date", None),
-                                  include_meta=True)
-    title = getattr(args, "title", None)
+    # The report wears the same accent the fullscreen app does, taken from the
+    # same `theme` setting; "omarchy" resolves the active desktop theme.
+    accent = theme.accent(core.settings(store).get("theme"))
 
     target = getattr(args, "output", None)
     if not target:
@@ -1021,11 +1034,11 @@ def cmd_export_day(args, out: Out, store: Store) -> dict:
         if fmt == "pdf" and not out.json_mode:
             out.fail("a pdf export needs -o FILE")
             return {"ok": False}
-        data = exporter.render(document, fmt, title=title)
+        data = exporter.render(document, fmt, title=title, accent=accent)
         if out.json_mode:
             return {"ok": True, "format": fmt,
                     "bytes": len(data), "document": document}
-        sys.stdout.buffer.write(exporter.render(document, fmt, title=title))
+        sys.stdout.buffer.write(data)
         sys.stdout.buffer.write(b"\n" if fmt != "pdf" else b"")
         return {"ok": True, "format": fmt}
 
@@ -1035,7 +1048,7 @@ def cmd_export_day(args, out: Out, store: Store) -> dict:
     if not os.path.splitext(target)[1]:
         target += exporter._FORMAT_BY_SUFFIX_INV.get(fmt, "")
     os.makedirs(os.path.dirname(os.path.abspath(target)) or ".", exist_ok=True)
-    data = exporter.render(document, fmt, title=title)
+    data = exporter.render(document, fmt, title=title, accent=accent)
     with open(target, "wb") as handle:
         handle.write(data)
 
@@ -1048,6 +1061,41 @@ def cmd_export_day(args, out: Out, store: Store) -> dict:
              f"{total} item" + ("" if total == 1 else "s")
              + f" · {fmt.upper()}")
     return {"ok": True, "output": target, "format": fmt, "bytes": len(data)}
+
+
+def cmd_export_day(args, out: Out, store: Store) -> dict:
+    """Write the commitments of one day to a file.
+
+    The day, the format and the destination are all command-line arguments; the
+    file carries the date it was taken in, alongside the day it is about. The
+    formats the user may choose are markdown, HTML, JSON, YAML and a printable
+    PDF, and the same structured document feeds every one, so a file's contents
+    do not depend on which of them was asked for. A date picks the tasks by two
+    clauses -- a deadline on it, or a defer window already open by it -- the
+    same rule for today and any other day, while a named context drops the date
+    entirely. `--no-overdue` leaves the day's already-past deadlines out.
+    """
+    tags = getattr(args, "tag", []) or getattr(args, "context", []) or []
+    document = exporter.day_export(store, getattr(args, "date", None),
+                                  include_meta=True, tags=tags or None,
+                                  no_overdue=bool(getattr(args, "no_overdue", False)),
+                                  command=_invoked_command())
+    return _emit_export(args, out, store, document, getattr(args, "title", None))
+
+
+def cmd_export_context(args, out: Out, store: Store) -> dict:
+    """Write every open task for one or more contexts to a file.
+
+    A context export is about the context rather than a day: it lists every open
+    task carrying the named contexts, or a context nested under one, whatever
+    its dates, and ignores the calendar entirely -- no date decides what is
+    listed or how the list is grouped. The work is ordered by deadline within
+    the one Context group.
+    """
+    names = getattr(args, "context", []) or []
+    document = exporter.day_export(store, include_meta=True, tags=list(names),
+                                   command=_invoked_command())
+    return _emit_export(args, out, store, document, getattr(args, "title", None))
 
 
 def _db_info(store: Store, items: int | None = None) -> dict:
@@ -1593,17 +1641,46 @@ def build_parser() -> argparse.ArgumentParser:
     node = add("export-day", cmd_export_day,
                 "write one day's commitments to a file",
                 aliases=("day-export",),
-                description=("The overdue, due, scheduled and completed items of "
-                             "one day, with the moment the export was taken, in "
-                             "markdown, JSON, YAML or PDF. The day, the format "
-                             "and the destination are all arguments; with no "
-                             "destination the text formats go to standard out."))
+                description=("What falls due on a date, whatever has been "
+                             "deferred on or before it, and what finished it — or "
+                             "every task for a context, stamped with the moment "
+                             "the export was taken, in markdown, HTML, JSON, YAML "
+                             "or PDF. --no-overdue leaves the day's already-past "
+                             "deadlines out. The day, the format and the "
+                             "destination are all arguments; with no destination "
+                             "the text formats go to standard out."))
     node.add_argument("date", nargs="?", help="the day, today by default")
     node.add_argument("-o", "--output", help="the output file (default: stdout)")
     node.add_argument("-f", "--format", dest="fmt",
                       choices=exporter.EXPORT_FORMATS,
-                      help="md, json, yaml or pdf (default: from the file suffix, or md)")
-    node.add_argument("--title", help="a heading at the top of an md or pdf")
+                      help="md, html, json, yaml or pdf (default: from the suffix, or md)")
+    node.add_argument("--title", help="a heading at the top of an md, html or pdf")
+    node.add_argument("--tag", "-t", action="append", default=[],
+                      help="export all tasks for this context/tag (can be repeated)")
+    node.add_argument("--context", action="append", default=[],
+                      help="export all tasks for this context/tag (can be repeated)")
+    node.add_argument("--no-overdue", "--ignore-overdue", dest="no_overdue",
+                      action="store_true",
+                      help="leave out tasks whose deadline has already passed")
+
+    node = add("export-context", cmd_export_context,
+                "write every task for a context to a file",
+                aliases=("context-export",),
+                description=("Every open task carrying a context, or a context "
+                             "nested under one, whatever its dates, with the "
+                             "moment the export was taken, in markdown, HTML, "
+                             "JSON, YAML or PDF. The calendar is not consulted: "
+                             "no date filter applies, and every task for the "
+                             "context tree is listed together. The format and the "
+                             "destination are arguments; with no destination the "
+                             "text formats go to standard out."))
+    node.add_argument("context", nargs="+", metavar="CONTEXT",
+                      help="the context/tag to export (one or more)")
+    node.add_argument("-o", "--output", help="the output file (default: stdout)")
+    node.add_argument("-f", "--format", dest="fmt",
+                      choices=exporter.EXPORT_FORMATS,
+                      help="md, html, json, yaml or pdf (default: from the suffix, or md)")
+    node.add_argument("--title", help="a heading at the top of an md, html or pdf")
 
     node = add("db", cmd_db, "database maintenance")
     node.add_argument("action", choices=("path", "info", "vacuum", "backup",

@@ -88,14 +88,19 @@ gtd capture "Fix the sink /Personal>Errands/ #home>kitchen <tomorrow >friday"
 ```
 For a full list of argumens, just run `gtd`.
 
-Sample tasks export command:
+Sample tasks export command, for tasks expiring or active on today:
 ```
-gtd export-day --format pdf -o export.pdf
+gtd export-day --no-overdue --format html -o export.html
+```
+
+Sample tasks export command, for tasks assigned to a specific context:
+```
+gtd export-context 'people>mom' --format html -o export.html
 ```
 
 assuming `gtd` points to `~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd`.
 
-Further extensions may, e.g., implement a web service.
+Further extensions may, e.g., implement a web service implementing a database lock mechanism to manage concurrency.
 
 ### The limitations
 

@@ -423,10 +423,14 @@ def human(stamp: str | None, reference: _dt.datetime | None = None, *, long: boo
     if 0 < days <= 6:
         return f"in {days}d"
     if days > 6:
-        if long:
-            return moment.strftime("%a %-d %b")
-        return moment.strftime("%-d %b")
-    return moment.strftime("%-d %b")
+        return moment.strftime("%B %d, %Y at %H:%M")
+    # For near dates, still show the full timestamp with date and time for clarity
+    return moment.strftime("%B %d, %Y at %H:%M")
+
+
+def human_long(stamp: str | None, reference: _dt.datetime | None = None) -> str:
+    """Format a stored stamp in full detail."""
+    return human(stamp, reference, long=True)
 
 
 def day_stamp(stamp: str | None) -> str:

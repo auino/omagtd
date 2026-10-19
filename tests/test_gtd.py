@@ -22,7 +22,7 @@ import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 
-from gtd import core, dates, db as db_module, importer, quick, review  # noqa: E402
+from gtd import core, dates, db as db_module, importer, quick, review, theme  # noqa: E402
 from gtd.core import GtdError  # noqa: E402
 from gtd.db import Store  # noqa: E402
 
@@ -3135,40 +3135,46 @@ class DayExport(TempStore):
         return past, due, scheduled
 
     def test_the_export_holds_only_the_named_date(self):
-        # An export of today is the Today view, never a running backlog of work
-        # left over from earlier days.
+        # An export of today holds the day's own deadline and whatever its
+        # defer window has swept up -- never the work left over from earlier
+        # days, which has neither stamp.
         past, due, scheduled = self._a_day()
         doc = exporter.day_export(self.store, "today")
         self.assertEqual(doc["date"], dt.date.today().isoformat())
         self.assertTrue(doc["exported_at"])  # the moment the export was taken
-        self.assertEqual(set(doc["counts"]), {"due", "scheduled", "completed"})
         titles = {it["title"] for it in doc["items"]}
         self.assertIn("Due today", titles)
         self.assertIn("Later this week", titles)
-        # The task whose deadline has passed is not on today's list.
+        # Overdue tasks are ignored, not dragged into the day's list.
         self.assertNotIn("Past due", titles)
 
-    def test_a_past_date_shows_only_work_due_then(self):
+    def test_a_past_date_holds_its_deadline_and_its_deferred_work(self):
         past, due, scheduled = self._a_day()
-        yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
-        doc = exporter.day_export(self.store, yesterday)
-        titles = {it["title"] for it in doc["items"]}
-        # Nothing is due yesterday, and a past task is not pulled forward.
-        self.assertNotIn("Past due", titles)
-        self.assertNotIn("Due today", titles)
+        today = dt.date.today()
+        # Clause one of the rule: what falls due on the date itself.
+        doc = exporter.day_export(
+            self.store, (today - dt.timedelta(days=2)).isoformat())
+        self.assertEqual({it["title"] for it in doc["items"]}, {"Past due"})
+        # Clause two: whatever was deferred on or before the date. A task
+        # with no defer window belongs to its deadline's day and no other.
+        doc = exporter.day_export(
+            self.store, (today - dt.timedelta(days=1)).isoformat())
+        self.assertEqual({it["title"] for it in doc["items"]},
+                         {"Later this week"})
 
     def test_the_date_argument_selects_the_day(self):
         self._a_day()
         tomorrow = (dt.date.today() + dt.timedelta(days=1)).isoformat()
         doc = exporter.day_export(self.store, tomorrow)
         self.assertEqual(doc["date"], tomorrow)
-        # Nothing is *due* tomorrow; the deferred task's window reaches it, so
-        # it is scheduled rather than due.
+        # Nothing falls due tomorrow. The deferred task's window opened
+        # yesterday, so it is deferred up to tomorrow and belongs to it;
+        # the two dated tasks have no defer window and so belong nowhere
+        # but the day of their own deadline.
+        titles = {it["title"] for it in doc["items"]}
+        self.assertEqual(titles, {"Later this week"})
         self.assertEqual(doc["counts"]["due"], 0)
-        self.assertEqual(doc["counts"]["scheduled"], 1)
-        self.assertEqual(
-            {it["title"] for it in doc["items"]},
-            {"Later this week"})
+        self.assertEqual(doc["counts"]["overdue"], 1)
 
     def test_markdown_carrying_the_date_and_time(self):
         self._a_day()
@@ -3179,17 +3185,79 @@ class DayExport(TempStore):
         self.assertIn("Due today", text)
         self.assertIn("Later this week", text)
         # A flagged task shows its flag.
-        self.assertIn("! Due today", text)
-        # The backlog is not a heading the export prints.
-        self.assertNotIn("Overdue", text)
+        self.assertTrue("! Due today" in text or "! **Due today**" in text)
+        # The day's own deadline is printed before the work its defer window
+        # swept up.
+        self.assertLess(text.index("## Due"), text.index("## Overdue"))
 
     def test_a_deferred_task_matches_the_calendar(self):
-        # A task in its defer window reads the same as the calendar's "scheduled"
-        # group: grey, marked, on the list.
+        # A task whose defer window is already open, with a deadline still
+        # ahead, is swept into the day's Overdue group: grey, marked, listed.
         self.capture("Later this week", defer="-1d", due="+3d")
         doc = exporter.day_export(self.store, "today")
         item = next(i for i in doc["items"] if i["title"] == "Later this week")
-        self.assertEqual(item["group"], "due")
+        self.assertEqual(item["group"], "overdue")
+
+    def test_tasks_are_ordered_by_deadline_with_undated_ones_last(self):
+        # Every group lists its tasks by deadline; the ones without a
+        # deadline come behind them all.
+        self.capture("Behind", defer="-3d", due="-1d")
+        self.capture("Ahead", defer="-3d", due="+1d")
+        self.capture("Whenever", defer="-3d")
+        doc = exporter.day_export(self.store, "today")
+        self.assertEqual([i["title"] for i in doc["groups"]["overdue"]],
+                         ["Behind", "Ahead", "Whenever"])
+        self.assertEqual([i["title"] for i in doc["groups"]["due"]], [])
+
+    def test_a_context_export_lists_every_task_whatever_its_dates(self):
+        # A context export is about the context, not the calendar: work with
+        # past, present and future dates all sit together in the one group,
+        # ordered by deadline with the deadline-less last.
+        self.capture("Late", due="-3d", tags=["work"])
+        self.capture("No date", tags=["work"])
+        self.capture("Due soon", due="+1d", tags=["work"])
+        self.capture("Deferred", defer="+1w", tags=["work"])
+        doc = exporter.day_export(self.store, "today", tags=["work"])
+        self.assertEqual(set(doc["groups"]), {"context"})
+        self.assertEqual([i["title"] for i in doc["groups"]["context"]],
+                         ["Late", "Due soon", "Deferred", "No date"])
+
+    def test_the_day_export_can_leave_out_past_deadlines(self):
+        # A defer window that carried a task past its own deadline lands it in
+        # the day's list; --no-overdue keeps it out, work due today staying.
+        self.capture("Late", defer="-3d", due="-2d")
+        self.capture("Today", due="today")
+        doc = exporter.day_export(self.store, "today")
+        self.assertEqual([i["title"] for i in doc["groups"]["overdue"]],
+                         ["Late"])
+        doc = exporter.day_export(self.store, "today", no_overdue=True)
+        self.assertEqual(doc["groups"]["overdue"], [])
+        self.assertEqual([i["title"] for i in doc["groups"]["due"]],
+                         ["Today"])
+
+    def test_no_overdue_does_not_narrow_a_context_export(self):
+        # The flag is a date filter, so a context export -- which consults no
+        # dates -- is unaffected: past work still belongs to the context.
+        self.capture("Late", due="-3d", tags=["work"])
+        self.capture("Now", due="today", tags=["work"])
+        doc = exporter.day_export(self.store, "today", tags=["work"],
+                                  no_overdue=True)
+        self.assertEqual([i["title"] for i in doc["groups"]["context"]],
+                         ["Late", "Now"])
+
+    def test_a_named_context_reaches_its_subcontexts(self):
+        # A context path is stored in full, so naming a parent context gathers
+        # its subcontexts too -- and nothing outside the tree.
+        self.capture("Kitchen sink", tags=["home>kitchen"])
+        self.capture("Home stuff", tags=["home"])
+        self.capture("Groceries", tags=["errands"])
+        doc = exporter.day_export(self.store, "today", tags=["home"])
+        self.assertEqual([i["title"] for i in doc["groups"]["context"]],
+                         ["Home stuff", "Kitchen sink"])
+        # A leaf names only itself.
+        doc = exporter.day_export(self.store, "today", tags=["home>kitchen"])
+        self.assertEqual([i["title"] for i in doc["groups"]["context"]],
+                         ["Kitchen sink"])
 
     def test_json_yaml_and_pdf_are_distinct_formats(self):
         self._a_day()
@@ -3202,12 +3270,88 @@ class DayExport(TempStore):
         self.assertTrue(as_pdf.startswith(b"%PDF-1.4"))
         self.assertTrue(as_pdf.rstrip().endswith(b"%%EOF"))
 
+    def test_html_is_a_self_contained_page(self):
+        self._a_day()
+        doc = exporter.day_export(self.store, "today")
+        html = exporter.render(doc, "html").decode("utf-8")
+        self.assertIn("<!DOCTYPE html>", html)
+        self.assertIn("<strong>Due today</strong>", html)
+        # The app's mark heads the page: its own icon, embedded whole so the
+        # file needs nothing beside it.
+        self.assertIn('class="logo"', html)
+        self.assertIn("wordmark", html)
+        self.assertIn("data:image/png;base64,", html)
+        self.assertIn('alt="OmaGTD"', html)
+        # The page is dressed in the accent the app's palette setting names.
+        self.assertIn(theme.accent(), html)
+        # The day's deadline heads the page before the work its defer window
+        # swept up, and work from earlier days is left out entirely.
+        self.assertLess(html.index("<h2>Due</h2>"), html.index("<h2>Overdue</h2>"))
+        self.assertNotIn("Past due", html)
+
+    def test_the_report_wears_the_configured_accent(self):
+        # The app's palette setting reaches the export: the two presets name
+        # their own accent, so the page is themed without any theme file.
+        self._a_day()
+        target = os.path.join(self.home, "day.html")
+
+        core.set_setting(self.store, "theme", "of-light")
+        proc = self.run_cli("export-day", "today", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            self.assertIn("#6e5ae0", handle.read())
+
+        core.set_setting(self.store, "theme", "of-dark")
+        proc = self.run_cli("export-day", "today", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            html = handle.read()
+        self.assertIn("#9a86f0", html)
+        self.assertNotIn("#218c8c", html)
+
+    def test_the_drawn_mark_wears_the_accent(self):
+        # The PDF keeps black on white; only the drawn mark takes the accent,
+        # asked for here in the old teal so the bytes are fixed.
+        ops = exporter._pdf_logo("#218c8c")
+        self.assertIn(theme.pdf_colour("#218c8c"), ops)
+        self.assertIn("0.13 0.55 0.55", ops)
+
+    def test_an_export_may_be_narrowed_to_a_context(self):
+        # A context-scoped export lists every task for that context, whatever
+        # its date -- it is about the context, not the day.
+        self.capture("At work", due="today", tags=["work"])
+        self.capture("At home", due="today", tags=["home"])
+        self.capture("Someday work", tags=["work"])
+        doc = exporter.day_export(self.store, "today", tags=["work"])
+        self.assertEqual(set(doc["counts"]), {"context"})
+        self.assertEqual(doc["counts"]["context"], 2)
+        self.assertEqual({it["title"] for it in doc["items"]},
+                         {"At work", "Someday work"})
+
+    def test_pdf_carries_a_bold_face(self):
+        # Task names are set in a real bold font, not literal asterisks.
+        self._a_day()
+        doc = exporter.day_export(self.store, "today")
+        data = exporter.render(doc, "pdf")
+        self.assertIn(b"Helvetica-Bold", data)
+        self.assertNotIn(b"**", data)
+
     def test_pdf_reports_no_structural_errors(self):
         # The hand-written PDF must parse: a real reader pulls the day's text
         # out of it. Skipped where no PDF tool is on the box.
         self._a_day()
         doc = exporter.day_export(self.store, "today")
-        data = exporter.render(doc, "pdf")
+        # The drawn mark is asked for the old teal, so the vector bytes are
+        # fixed whatever the desktop theme happens to be.
+        data = exporter.render(doc, "pdf", accent="#218c8c")
+        # The app's mark heads every page: the icon image where it can be
+        # decoded, the drawn vector mark where it cannot.
+        try:
+            import PIL  # noqa: F401
+            self.assertIn(b"/Subtype /Image", data)
+            self.assertIn(b"/Im0 Do", data)
+        except ImportError:
+            self.assertIn(b"0.13 0.55 0.55 RG", data)
         try:
             import subprocess
             path = os.path.join(self.home, "check.pdf")
@@ -3220,6 +3364,10 @@ class DayExport(TempStore):
         out = proc.stdout
         self.assertIn("Due", out)
         self.assertIn("Due today", out)
+        # The day's deadline is printed before the work its defer window
+        # swept up.
+        self.assertLess(out.index("Due today"), out.index("Overdue"))
+        self.assertNotIn("**", out)
         self.assertNotIn("xref", out)
         self.assertNotIn("Illegal", out)
 
@@ -3281,4 +3429,121 @@ class DayExport(TempStore):
         data = json.loads(proc.stdout)
         self.assertIn("exported_at", data)
         self.assertEqual(data["format"], "json")
+
+    def test_the_export_records_the_command_that_made_it(self):
+        # A file says how it was asked for: the command line is written
+        # under the export stamp, in every format.
+        self._a_day()
+        target = os.path.join(self.home, "day.md")
+        proc = self.run_cli("export-day", "today", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            text = handle.read()
+        self.assertIn("gtd export-day today -o " + target, text)
+
+        target = os.path.join(self.home, "day.json")
+        proc = self.run_cli("export-day", "today", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            data = json.loads(handle.read())
+        self.assertEqual(data["command"], "gtd export-day today -o " + target)
+
+    def test_the_context_export_records_its_own_command(self):
+        self.capture("At work", due="today", tags=["work"])
+        target = os.path.join(self.home, "work.html")
+        proc = self.run_cli("export-context", "work", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            html = handle.read()
+        self.assertIn("gtd export-context work -o " + target, html)
+
+    def test_cli_export_context_lists_every_task_whatever_its_dates(self):
+        # The context export consults no date filter: work from the past, the
+        # present and the future all appear, in the one Context group.
+        self.capture("Now", due="today", tags=["work"])
+        self.capture("Later", due="+1w", tags=["work"])
+        self.capture("Late", due="-3d", tags=["work"])
+        self.capture("Not mine", due="today", tags=["home"])
+        target = os.path.join(self.home, "work.html")
+        proc = self.run_cli("export-context", "work", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            html = handle.read()
+        for title in ("Now", "Later", "Late"):
+            self.assertIn(title, html)
+        self.assertNotIn("Not mine", html)
+        self.assertIn("<h2>Context</h2>", html)
+        self.assertNotIn("Future", html)
+
+    def test_cli_export_day_can_ignore_overdue_work(self):
+        # The flag is accepted on the day export and drops a past deadline.
+        self.capture("Late", defer="-3d", due="-2d")
+        self.capture("Today", due="today")
+        target = os.path.join(self.home, "day.md")
+        proc = self.run_cli("export-day", "today", "--no-overdue", "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            text = handle.read()
+        self.assertIn("Today", text)
+        self.assertNotIn("Late", text)
+
+    def test_cli_export_context_needs_a_context(self):
+        proc = self.run_cli("export-context")
+        self.assertNotEqual(proc.returncode, 0)
+
+
+class ReportTheme(unittest.TestCase):
+    """Which accent a report wears: the app's own, or the desktop theme's."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp(prefix="gtd-theme-")
+        self._env = {key: os.environ.get(key) for key in ("HOME", "GTD_HOME")}
+        os.environ["HOME"] = self.home
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def _write_desktop_theme(self, accent):
+        folder = os.path.join(self.home, ".local", "state", "omarchy",
+                              "current", "theme")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "colors.toml"), "w") as handle:
+            handle.write('foreground = "#a9b1d6"\nbackground = "#1a1b26"\n'
+                         f'accent = "{accent}"\n')
+
+    def test_the_presets_name_their_own_accent(self):
+        self.assertEqual(theme.accent("of-light"), "#6e5ae0")
+        self.assertEqual(theme.accent("of-dark"), "#9a86f0")
+
+    def test_omarchy_reads_the_active_desktop_theme(self):
+        self._write_desktop_theme("#123456")
+        self.assertEqual(theme.accent("omarchy"), "#123456")
+        # No name at all, and a name the app does not know, both mean the
+        # default setting: follow the desktop.
+        self.assertEqual(theme.accent(), "#123456")
+        self.assertEqual(theme.accent("nonsense"), "#123456")
+
+    def test_a_machine_without_a_theme_still_gets_an_accent(self):
+        self.assertEqual(theme.accent("omarchy"), theme.FALLBACK_ACCENT)
+
+    def test_color4_stands_in_when_a_theme_predates_accent(self):
+        folder = os.path.join(self.home, ".local", "state", "omarchy",
+                              "current", "theme")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "colors.toml"), "w") as handle:
+            handle.write('foreground = "#a9b1d6"\ncolor4 = "#abcdef"\n')
+        self.assertEqual(theme.accent("omarchy"), "#abcdef")
+
+    def test_a_hex_colour_becomes_a_pdf_triple(self):
+        self.assertEqual(theme.pdf_colour("#000000"), "0.00 0.00 0.00")
+        self.assertEqual(theme.pdf_colour("#ffffff"), "1.00 1.00 1.00")
+        self.assertEqual(theme.pdf_colour("#218c8c"), "0.13 0.55 0.55")
+        # Anything unreadable paints black rather than breaking a stream.
+        self.assertEqual(theme.pdf_colour("nonsense"), "0 0 0")
 

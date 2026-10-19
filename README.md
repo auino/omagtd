@@ -95,24 +95,71 @@ a `.ofxml` backup, or the line-oriented `.ofocusmx` text — plus our own
 `json`, `csv` and `zip`. The format is chosen by content unless `--format`
 says otherwise.
 
-`export day` writes the commitments of a single date — what is due then, work
-whose defer window is open, and what got finished, with the moment the export
-was taken — to a file in markdown, JSON, YAML or PDF. For today this is the same
-list the Today view shows; for another date it is the work due or scheduled for
-that day, and a task left over from an earlier date is not dragged in. The day,
-the format and the destination are all arguments; the format is taken from the
-file's suffix unless `--format` says otherwise,
-and with no destination the text formats go to standard out:
+`export day` writes the commitments of a single date — what falls due that day,
+whatever has been deferred on or before it, and what got finished — with the
+moment the export was taken and the command line that produced it, to a file in
+markdown, HTML, JSON, YAML or PDF. One
+rule picks the tasks, and it is the same for today and for any other date: a
+deadline on that date, or a defer window already open by it. The export of the
+5th lists what is due on the 5th and everything available by the 5th, and
+nothing else; work finished that day is written too, for today. `--no-overdue`
+drops the day's already-past deadlines. Within each group the tasks are ordered
+by deadline, with those carrying no deadline last. The day, the format and the
+destination are all arguments; the format is taken from the file's suffix unless
+`--format` says otherwise, and with no destination the text formats go to
+standard out:
 
 ```bash
-gtd export-day                         # today, markdown, to stdout
+gtd export-day                          # today, markdown, to stdout
 gtd export-day +3d --format pdf -o week.pdf
 gtd export-day 2026-10-05 -o plan.yaml  # the suffix picks YAML
+gtd export-day today --format html -o today.html  # pretty, self-contained page
+gtd export-day --tag work               # every task in the `work` context
+gtd export-context work                 # every task in `work`, to stdout
+gtd export-context work home -o both.html  # two contexts at once
 ```
+
+An export may be scoped to one or more contexts with `--tag NAME` (or its alias
+`--context NAME`), or with the `export-context NAME` command. A context-scoped
+export is about the context rather than the date: it lists every open task
+carrying those contexts, whatever their dates, and consults no date filter at
+all — nothing is dropped or separated by when it falls due, and the whole list
+sits in one Context group, ordered by deadline. Naming a parent context reaches
+its subcontexts too, so `export-context home` covers `home>kitchen`; the `--tag`
+flag may be repeated to keep the union of several contexts.
 
 An OmniFocus `import` stamps every imported task with a dated context,
 `omnifocus_import_<yyyymmdd>`, so a batch can be found and reviewed together.
 Name your own with `--tag`, or pass `--tag ''` to add none.
+
+### Export glyphs and layout
+
+Every export shares one vocabulary of glyphs and styles:
+
+- `[ ]` — the square bullet that opens each action, in markdown and PDF.
+- `■` — the same square bullet as a literal glyph in HTML.
+- `!` — a flagged (priority) task, set in red in HTML.
+- Task names are **bold** throughout (a real bold face in the PDF, `<strong>` in
+  HTML, `**…**` in markdown).
+- Each action is followed by its details where present: its project
+  (`in …`), area, contexts (`#tag`), duration estimate, link, its defer and due
+  moments, and any notes.
+
+Both the PDF and the HTML report open with the app's own icon centred above the
+date line, so a printed or viewed page is clearly an OmaGTD report. The mark
+travels inside the file: the HTML page carries it as a `data:` URI and the PDF
+as an image object, neither needing anything beside it. The day's groups print
+in order: *Due* first, then *Overdue* — the work the day's defer window swept
+up — then *Completed*; a context export prints its one *Context* group, with
+every task for the context listed together. The PDF uses the same square bullet, bold task
+names and full details on every page; the HTML export renders the same document
+as a single self-contained page with a small built-in stylesheet.
+
+Both reports are dressed in the accent the app's palette setting names — the
+active desktop theme's accent under `omarchy`, otherwise the preset's own — so
+the wordmark, headings and bullets match the window they came from. Only the
+accent travels: the page keeps its white paper and dark ink, staying readable
+and printable whatever the desktop is wearing.
 
 ### Data location
 

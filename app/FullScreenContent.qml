@@ -1155,24 +1155,71 @@ readonly property var primaryViews: [
   // depth. The parent row sorts before its children, so indentation is enough
   // to show the shape without a separate hierarchy walk.
 
-  function flattenContexts(data) {
-    var out = []
-    var places = data && data.items ? data.items.slice() : []
-    places.sort(function(a, b) {
-      var na = String(a.name || "").toLowerCase()
-      var nb = String(b.name || "").toLowerCase()
-      if (na < nb) return -1
-      if (na > nb) return 1
-      return 0
-    })
-    for (var i = 0; i < places.length; i++) {
-      var full = places[i].name || ""
-      var depth = (full.match(/>/g) || []).length
-      var leaf = depth > 0 ? full.slice(full.lastIndexOf(">") + 1) : full
-      out.push({ kind: "tag", id: places[i].id, title: "#" + leaf, name: full,
-                 depth: depth, open_count: places[i].open_count || 0,
-                 raw: places[i] })
+  // Every context path, with the parent rows its children imply filled back in.
+  // `gtd list tags` carries only the contexts with open work filed directly
+  // under them, so "work>office" can arrive with no "work" row above it; the
+  // tree only reads right once each missing ancestor is put back. A row's count
+  // is the open work at or under it — which is what the middle column shows when
+  // the row is picked, since a context takes its subcontexts with it.
+  function contextPaths(tags) {
+    var byName = {}
+    var list = tags || []
+    for (var i = 0; i < list.length; i++) {
+      var name = String(list[i].name || "")
+      if (name === "") continue
+      byName[name] = { id: list[i].id, name: name,
+                       open_count: list[i].open_count || 0, raw: list[i] }
     }
+    // The parent of "a>b>c" is "a>b": walk each name's chain, putting back any
+    // ancestor the list left out.
+    for (var i = 0; i < list.length; i++) {
+      var full = String(list[i].name || "")
+      var cut = full.lastIndexOf(">")
+      while (cut > 0) {
+        var parent = full.slice(0, cut)
+        if (byName[parent] === undefined) {
+          // A made-up, collision-free id: the row has no database row of its
+          // own, but the detail pane matches requests by id.
+          var pid = "ctx:" + parent
+          byName[parent] = { id: pid, name: parent, open_count: 0,
+                             raw: { id: pid, name: parent, open_count: 0 } }
+        }
+        cut = parent.lastIndexOf(">")
+      }
+    }
+    var out = []
+    for (var key in byName) out.push(byName[key])
+    // Sorted by name, a parent always sorts before its own children, so depth
+    // falls out of the name and indentation is enough to draw the shape.
+    out.sort(function(a, b) {
+      var na = a.name.toLowerCase()
+      var nb = b.name.toLowerCase()
+      return na < nb ? -1 : na > nb ? 1 : 0
+    })
+    for (var i = 0; i < out.length; i++) {
+      var depth = (out[i].name.match(/>/g) || []).length
+      out[i].depth = depth
+      out[i].leaf = depth > 0
+        ? out[i].name.slice(out[i].name.lastIndexOf(">") + 1) : out[i].name
+    }
+    // Reading back to front, a child is always met before its parent, so
+    // folding each row's count up its chain totals each branch once.
+    for (var i = out.length - 1; i >= 0; i--) {
+      var c = out[i].name.lastIndexOf(">")
+      if (c <= 0) continue
+      var above = byName[out[i].name.slice(0, c)]
+      if (above) above.open_count += out[i].open_count
+    }
+    return out
+  }
+
+  function flattenContexts(data) {
+    var paths = root.contextPaths(data && data.items ? data.items : [])
+    var out = []
+    for (var i = 0; i < paths.length; i++)
+      out.push({ kind: "tag", id: paths[i].id, title: "#" + paths[i].leaf,
+                 name: paths[i].name, depth: paths[i].depth,
+                 open_count: paths[i].open_count, raw: paths[i].raw })
     return out
   }
 
@@ -1796,14 +1843,11 @@ readonly property var primaryViews: [
     }
 
     if (key === "contexts") {
-      var tags = data.items || []
-      for (var q = 0; q < tags.length; q++) {
-        var fullName = tags[q].name || ""
-        var depth = (fullName.match(/>/g) || []).length
-        var leaf = depth > 0 ? fullName.slice(fullName.lastIndexOf(">") + 1) : fullName
-        out.push({ kind: "tag", id: tags[q].id, title: "#" + leaf,
-                   meta: (tags[q].open_count || 0) + " open", raw: tags[q],
-                   flag: "--tag", name: fullName, depth: depth })
+      var paths = root.contextPaths(data.items || [])
+      for (var q = 0; q < paths.length; q++) {
+        out.push({ kind: "tag", id: paths[q].id, title: "#" + paths[q].leaf,
+                   meta: paths[q].open_count + " open", raw: paths[q].raw,
+                   flag: "--tag", name: paths[q].name, depth: paths[q].depth })
       }
       return out
     }
@@ -3741,10 +3785,15 @@ readonly property var primaryViews: [
                       anchors.fill: parent
                       anchors.margins: 1
                       radius: Style.cornerRadius
+                      // Every day reads as a box: a faint fill so the grid holds
+                      // even with nothing on it. Days outside the month stay
+                      // blank, so the month itself is what the eye picks out.
+                      // Only today keeps a ring, in the accent.
                       color: calCell.modelData.date === root.calendarSelectedDate
                         ? Style.selectedFillFor(root.textColor, root.accent)
-                        : (calCell.modelData.inMonth ? "transparent"
-                           : Qt.alpha(root.textColor, 0.04))
+                        : calCell.modelData.inMonth
+                          ? Style.normalFillFor(root.textColor, root.accent, root.urgent)
+                          : "transparent"
                       border.width: calCell.modelData.isToday ? 1 : 0
                       border.color: root.accent
                     }

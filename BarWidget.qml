@@ -181,14 +181,14 @@ BarWidget {
   readonly property string pillText: (root.hideZeroCounts && root.countsAreZero)
     ? "GTD"
     : "GTD " + root.dueTodayLate + "/" + root.dueToday
-  // One shared signal for "something is late", read in three steps: red when
-  // anything has expired (today's time passed, or work left over from an
-  // earlier day — leftovers do colour the pill now), orange when a task on
-  // today's list is flagged and nothing has expired, plain otherwise. Every
-  // flagged action sits in the `today` view, so the global flagged count is
-  // exactly "at least one flagged task on today".
-  readonly property bool pillRed: root.overdue > 0 || root.dueTodayLate > 0
-  readonly property bool pillOrange: !root.pillRed && root.flaggedToday > 0 && root.dueToday > 0
+  // The pill's colour, in one priority: red the moment a task due today has
+  // run past its clock time; otherwise orange when a flagged task sits on
+  // today and has not expired yet; plain the rest of the time. Work left over
+  // from an earlier day stays out of it — that shows in the tooltip only, as
+  // its own count. `flagged_today` already drops today's expired flags, so it
+  // is exactly "flagged and not expired", and red outranks it.
+  readonly property bool pillRed: root.dueTodayLate > 0
+  readonly property bool pillOrange: !root.pillRed && root.flaggedToday > 0
 
   // The bar slot is just the pill: the counts open the quick panel, and the
   // full view is reached from the panel itself (its ↓ / capture-and-edit) or
