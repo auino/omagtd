@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS meta (
 -- Containment is a single parent pointer: a project belongs to an area (or
 -- to nothing, an orphan project), an action belongs to a project or an area.
 -- The inbox is not a row — it is `status = 'inbox'`, which is what makes
--- "what have I not clarified yet" a one-line query.
+-- "what have I not clarified yet" a one-line query. A task parked as
+-- `waiting` before it ever had a home is in the same boat, so the inbox
+-- lists that too (see the view below); it keeps its status.
 CREATE TABLE IF NOT EXISTS items (
   id           TEXT PRIMARY KEY,
   kind         TEXT    NOT NULL CHECK (kind IN ('action', 'project', 'area')),
@@ -197,10 +199,16 @@ CREATE VIEW IF NOT EXISTS open_items AS
 SELECT * FROM items
 WHERE status NOT IN ('done', 'dropped', 'archived', 'trashed');
 
--- GTD step 1 — the inbox is "mind is clear" or it is not.
+-- GTD step 1 — the inbox is "mind is clear" or it is not. A task parked as
+-- `waiting` that has no project/area and no context is listed here too: parked
+-- before it was organized, it is as much in need of a decision as any other
+-- capture. It keeps its status, so it stays in the waiting view as well; a
+-- waiting task with a home has been decided and stays out of the inbox.
 CREATE VIEW IF NOT EXISTS inbox AS
 SELECT * FROM items
 WHERE status = 'inbox'
+   OR (status = 'waiting' AND kind = 'action' AND parent_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM item_tags t WHERE t.item_id = items.id))
 ORDER BY created_at;
 
 -- GTD step 2 — the clarify queue, oldest first: unclarified captures that

@@ -240,6 +240,7 @@ class Store:
         self._fold_attachment_paths()
         self._drop_stale_deadline_views()
         self._drop_stale_archived_views()
+        self._drop_stale_inbox_views()
 
     def _fold_priority(self) -> None:
         """Lower every priority above 1 to the one flag there is now.
@@ -607,6 +608,22 @@ class Store:
                 (view,))
             if body and "'archived'" not in body:
                 self.db.execute(f"DROP VIEW IF EXISTS {view}")
+
+    def _drop_stale_inbox_views(self) -> None:
+        """Rebuild the inbox so a waiting task with no home is listed in it.
+
+        schema.sql can only CREATE VIEW IF NOT EXISTS, so a view written before
+        this rule keeps the old body — `status = 'inbox'` alone, which hides a
+        task parked as `waiting` before it was ever organized. Dropping it here
+        lets executescript build the current definition in the same open. The
+        task's own status is not touched: it stays `waiting`, so the waiting
+        view keeps it too.
+        """
+        body = self.scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = ?",
+            ("inbox",))
+        if body and "waiting" not in body:
+            self.db.execute("DROP VIEW IF EXISTS inbox")
 
     # ------------------------------------------------------------- queries
 

@@ -18,6 +18,11 @@ entry does.
 Deliberately conservative about one thing: `/Name/` is only stripped when a
 container actually answers to that name. Otherwise "and/or" and "his/her"
 survive as the title, which is why a capture can never lose text to a guess.
+
+A file of deliberate lines (what `gtd import-lines` reads) is the exception:
+parsing it with `assume_containers=True` takes an unanswered `/Name/` at its
+word as a project, and `/a/Name/` as an area, so an import can bring containers
+in with the tasks that belong to them.
 """
 
 from __future__ import annotations
@@ -29,6 +34,9 @@ from . import dates
 FLAG_RE = re.compile(r"^(!{1,3})\s+")
 TAG_RE = re.compile(r"^#(\S+)$")
 CONTAINER_RE = re.compile(r"^/(?P<body>[^/]+)/$")
+# `/a/Home admin/` — the area form, with its own pattern because the general
+# one refuses a body containing a slash, and `a/Home admin` contains one.
+AREA_TOKEN_RE = re.compile(r"^/a/(?P<name>[^/]+)/$", re.IGNORECASE)
 DUE_RE = re.compile(r"^>(?P<body>.*)$")
 DEFER_RE = re.compile(r"^<(?P<body>.*)$")
 REPEAT_RE = re.compile(r"^~(?P<body>.*)$")
@@ -81,12 +89,33 @@ def _claim(tokens: list[str], start: int, validator) -> tuple[str | None, int]:
     return None, start + 1
 
 
-def parse(text: str, known: dict[str, str] | None = None) -> dict:
+def _container_of(token: str) -> tuple[str, str | None] | None:
+    """What container this one token names: its body, and a kind it declared.
+
+    `/Garden fence/` names a body only — whether a container answers to it is
+    someone else's question. `/a/Home admin/` also says which kind, which is
+    the whole point of the prefix.
+    """
+    area = AREA_TOKEN_RE.fullmatch(token)
+    if area:
+        return area.group("name").strip(), "area"
+    holder = CONTAINER_RE.fullmatch(token)
+    if holder:
+        return holder.group("body").strip(), None
+    return None
+
+
+def parse(text: str, known: dict[str, str] | None = None, *,
+          assume_containers: bool = False) -> dict:
     """Parse a quick-entry line.
 
     `known` maps a container name (case-insensitive) to its kind, so `/Name/`
     can be resolved without a database round trip. Names that are not in
     `known` stay in the title.
+
+    With `assume_containers` an unanswered `/Name/` is a project and an
+    unanswered `/a/Name/` an area — the reading an import of deliberate lines
+    wants, and never one a typed capture gets.
 
     Returns a dict with title, notes, priority, defer, due, repeat, tags,
     project, area and leftover_unknown (candidate containers that no longer
@@ -127,17 +156,22 @@ def parse(text: str, known: dict[str, str] | None = None) -> dict:
 
         # Container names may contain spaces, so `/Garden fence/` arrives as
         # two tokens and has to be glued back together first.
-        if token.startswith("/") and not CONTAINER_RE.fullmatch(token):
+        if token.startswith("/") and _container_of(token) is None:
             for size in range(2, min(6, len(tokens) - index) + 1):
                 joined = " ".join(tokens[index:index + size])
-                if CONTAINER_RE.fullmatch(joined):
+                if _container_of(joined):
                     token, span = joined, size
                     break
 
-        container = CONTAINER_RE.fullmatch(token)
-        if container:
-            body = container.group("body").strip()
-            kind = known.get(body.lower())
+        found = _container_of(token)
+        if found:
+            body, kind = found
+            if kind is None:
+                kind = known.get(body.lower())
+                if kind is None and assume_containers:
+                    # An import file means its containers: unanswered, this
+                    # one is a project.
+                    kind = "project"
             if kind == "project":
                 out["project"] = body
             elif kind == "area":

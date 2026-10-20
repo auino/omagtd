@@ -16,6 +16,9 @@ In, in decreasing order of fidelity:
                or exported from a spreadsheet.
 ``json``       this system's own export format; importing it is a lossless
                round trip, which makes backups boring.
+``lines``      one quick-entry command per line, for a list written by hand
+               (``gtd import-lines``): the plainest way in, and the only one
+               that is meant to be typed.
 
 Out: the same formats, so a database can be read by something else.
 """
@@ -37,7 +40,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 
-from . import dates
+from . import core, dates, quick
 from .core import GtdError, ensure_container, ensure_tag
 
 # OmniFocus folder location -> our status.
@@ -878,6 +881,109 @@ def _import_zip(store, path: Path, *, dry_run=False, progress=False,
 
 
 # ------------------------------------------------------------ entry point
+
+
+def _line_to_task(store, line: str, known: dict[str, str],
+                  extra: str = "") -> tuple[dict, dict]:
+    """Turn one quick-entry line into a task, making its containers on the way.
+
+    `known` grows as the file goes: a project the file creates for line 3 has
+    to answer to `/Name/` on line 9 the same way, and an area created as
+    `/a/Name/` must not be read as a project later on.
+    """
+    parsed = quick.parse(line, known, assume_containers=True)
+    if parsed["project"]:
+        known.setdefault(parsed["project"].lower(), "project")
+    if parsed["area"]:
+        known.setdefault(parsed["area"].lower(), "area")
+    tags = list(parsed["tags"])
+    if extra and extra not in tags:
+        tags.append(extra)
+    task = core.capture(
+        store, None, title=parsed["title"], notes=parsed.get("notes") or "",
+        project=parsed["project"], area=parsed["area"], tags=tags,
+        priority=parsed["priority"], defer=parsed["defer"], due=parsed["due"],
+        duration=parsed["duration"], repeat=parsed["repeat"],
+        parse_text=False)
+    return task, parsed
+
+
+def import_lines(store, source: str, *, dry_run: bool = False,
+                 tag: str | None = None) -> dict:
+    """One capture command per line, straight into the system.
+
+    Every non-empty line is one line of quick entry, so `!`, `#context`,
+    `#parent>child`, `<defer`, `>due`, `~repeat` and `*effort` all land on the
+    task the line becomes. `/Name/` and `/a/Name/` create the project or the
+    area when nobody has made it yet — an import file is deliberate about the
+    containers it names. `tag` is an extra context stamped on every line, the
+    way `import` stamps a batch.
+
+    A line that cannot become a task is reported with its line number and the
+    rest still import; it leaves nothing behind, because each line runs in its
+    own savepoint. `dry_run` runs the same code and undoes it, which is how
+    `import` rehearses too.
+    """
+    path = Path(os.path.expanduser(source))
+    if not path.is_file():
+        raise GtdError(f"no such file: {source}")
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+
+    extra = str(tag or "").strip()
+    known = core.container_names(store)
+    result = {
+        "source": str(path),
+        "lines": 0, "blank": 0, "imported": 0, "failed": 0,
+        "dry_run": bool(dry_run), "tag": extra,
+        "projects": [], "areas": [], "contexts": [],
+        "errors": [],
+    }
+    projects: set[str] = set()
+    areas: set[str] = set()
+    contexts: set[str] = set()
+
+    if dry_run:
+        store.run("BEGIN")
+    try:
+        for number, raw in enumerate(text.splitlines(), start=1):
+            line = raw.strip()
+            if not line:
+                result["blank"] += 1
+                continue
+            result["lines"] += 1
+            store.run(f"SAVEPOINT line_{number}")
+            try:
+                task, parsed = _line_to_task(store, line, known, extra)
+                store.run(f"RELEASE line_{number}")
+            except GtdError as exc:
+                store.run(f"ROLLBACK TO line_{number}")
+                store.run(f"RELEASE line_{number}")
+                result["failed"] += 1
+                result["errors"].append(
+                    {"line": number, "text": line, "error": str(exc)})
+                continue
+            result["imported"] += 1
+            if parsed["project"]:
+                projects.add(parsed["project"])
+            if parsed["area"]:
+                areas.add(parsed["area"])
+            contexts.update(task.get("tags") or [])
+    except Exception:
+        if dry_run:
+            store.run("ROLLBACK")
+        raise
+    if dry_run:
+        store.run("ROLLBACK")
+
+    if not result["imported"] and result["failed"]:
+        first = result["errors"][0]
+        raise GtdError(f"nothing imported from {path.name} — line "
+                       f"{first['line']}: {first['error']}")
+
+    result["projects"] = sorted(projects, key=str.lower)
+    result["areas"] = sorted(areas, key=str.lower)
+    result["contexts"] = sorted(contexts, key=str.lower)
+    return result
 
 
 def import_file(store, source: str, *, fmt: str = "auto", dry_run: bool = False,

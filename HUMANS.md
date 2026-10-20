@@ -98,7 +98,33 @@ Sample tasks export command, for tasks assigned to a specific context:
 gtd export-context 'people>mom' --format html -o export.html
 ```
 
-assuming `gtd` points to `~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd`.
+Sample task import from file; each task in a single line and expressed in capture-like style (`import-lines`, alias `import-txt`):
+```
+gtd import-lines tasks.txt
+```
+where a sample line on that file is (syntax supports `!`, `#ctx`, `#parent>child`, `/Project/`, `<defer`, `>due`, `~repeat`, `*effort`):
+```
+! Buy the milk <tomorrow >sunday #pesonal>errands /Shopping/ ~every week *1h
+```
+
+where each line of the file may contain:
+* `!` is used to flag the task
+* `<tomorrow` is used to define the task defer date
+* `>sunday` is used to define the task deadline
+* `#personal>errands` is used to assign a context
+* `/Shopping/` is used to define a project (it is created if it does not exist)
+* `~every week` repeats the task, `*1h` estimates it
+* `*1h` set the effort required to complete the task
+* dates can be expressed, e.g., as `today`, `tomorrow`, `monday`, `2027-01-31`
+
+```
+gtd import-lines tasks.txt --dry-run   # check the file without writing anything
+gtd import-lines tasks.txt --tag batch # add a context to every line
+```
+
+All commands above assume `gtd` points to `~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd`.
+
+Scheduled import/export commands can be used as a basic interaction with other devices (including mobile devices, e.g., through Apple Shortcuts), by using a shared folder.
 
 Further extensions may, e.g., implement a web service implementing a database lock mechanism to manage concurrency.
 

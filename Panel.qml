@@ -32,6 +32,7 @@ Panel {
   readonly property url appIcon: Qt.resolvedUrl("app/icon.png")
 
   // ---- Counts, mirrored from `gtd bar --json`.
+  property int inbox: 0
   property int next: 0
   property int today: 0
   property int dueToday: 0
@@ -302,6 +303,7 @@ Panel {
         try {
           var d = JSON.parse(out)
           root.stale = false
+          root.inbox = d.inbox || 0
           root.next = d.next || 0
           root.today = d.today || 0
           root.dueToday = d.due_today || 0

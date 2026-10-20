@@ -20,7 +20,10 @@ from ..db import STAMP, Store, now
 
 _ITEMS_SQL = """
 SELECT
-  SUM(i.status = 'inbox') AS inbox,
+  SUM(i.status = 'inbox'
+      OR (i.kind = 'action' AND i.status = 'waiting' AND i.parent_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM item_tags it
+                          WHERE it.item_id = i.id))) AS inbox,
   SUM(i.status = 'inbox' AND i.kind = 'action') AS clarify,
   SUM(i.kind = 'action' AND i.status = 'active'
       AND (i.parent_id IS NULL OR p.id IS NULL OR p.status = 'active')

@@ -806,7 +806,7 @@ def cmd_bar(args, out: Out, store: Store) -> dict:
 def cmd_settings(args, out: Out, store: Store) -> dict:
     """Show the knobs, or turn one: due_time, time_format, theme,
     auto_remove_*, done_retention_days, archive_retention_days,
-    calendar_show_completed."""
+    calendar_show_completed, fullscreen_default_view."""
     if args.action == "set":
         value = core.set_setting(store, args.key, args.value)
         data = core.settings(store)
@@ -835,6 +835,8 @@ def cmd_settings(args, out: Out, store: Store) -> dict:
               "days an archived task is kept (0 = forever)")
     out.line(f"  calendar_show_completed   {data['calendar_show_completed']}     "
               "calendar green mark for completed tasks")
+    out.line(f"  fullscreen_default_view   {data['fullscreen_default_view']}     "
+              "view the full-screen app opens on (inbox, calendar, today)")
     return {"ok": True, **data}
 
 
@@ -911,6 +913,40 @@ def cmd_import(args, out: Out, store: Store) -> dict:
     if result["warnings"]:
         for warning in result["warnings"][:20]:
             out.line(out.yellow("  ! ") + warning)
+    return {"ok": True, **result}
+
+
+def cmd_import_lines(args, out: Out, store: Store) -> dict:
+    """Read a text file of quick-entry lines, one task per line.
+
+    The import format nobody has to export first: a list typed into an editor
+    uses the syntax the quick-entry box uses, so what works there works here,
+    containers and all. Failures stay per line — one line that cannot become a
+    task must not cost the other ninety-nine.
+    """
+    result = importer.import_lines(store, args.source, dry_run=args.dry_run,
+                                   tag=args.tag)
+    if out.json_mode:
+        return {"ok": True, **result}
+    head = "would import" if result["dry_run"] else "imported"
+    words = (("projects", "project"), ("areas", "area"), ("contexts", "context"))
+    made = [f"{len(result[key])} {word}"
+            f"{'' if len(result[key]) == 1 else 's'}"
+            for key, word in words if result[key]]
+    line = (out.green(head) + f" {result['imported']} task"
+            + ("" if result["imported"] == 1 else "s"))
+    if result["blank"]:
+        line += (f"  {out.dim('·')}  {result['blank']} blank line"
+                 + ("" if result["blank"] == 1 else "s") + " skipped")
+    if made:
+        line += f"  {out.dim('·')}  " + " · ".join(made)
+    out.line(line)
+    if result["tag"]:
+        out.line(out.dim(f"  tagged every line {result['tag']}"))
+    for error in result["errors"][:20]:
+        out.line(out.yellow("  ! ") + f"line {error['line']}: {error['error']}")
+    if len(result["errors"]) > 20:
+        out.line(out.dim(f"  … and {len(result['errors']) - 20} more lines"))
     return {"ok": True, **result}
 
 
@@ -1073,7 +1109,10 @@ def cmd_export_day(args, out: Out, store: Store) -> dict:
     do not depend on which of them was asked for. A date picks the tasks by two
     clauses -- a deadline on it, or a defer window already open by it -- the
     same rule for today and any other day, while a named context drops the date
-    entirely. `--no-overdue` leaves the day's already-past deadlines out.
+    entirely. `--no-overdue` writes the day's own list only: the overdue group
+    is left out whole, and within the day's own deadlines one already gone by,
+    an earlier hour of that day included, is not written either. A named
+    context consults no dates at all, so there the flag changes nothing.
     """
     tags = getattr(args, "tag", []) or getattr(args, "context", []) or []
     document = exporter.day_export(store, getattr(args, "date", None),
@@ -1269,7 +1308,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gtd",
         description="Getting Things Done for Omarchy, modelled on OmniFocus.",
-        epilog="The five steps: capture, clarify, organize, review, engage.",
+        epilog=("The five steps: capture, clarify, organize, review, engage.\n"
+                "\n"
+                "gtd export-day --no-overdue  write the day's own deadlines "
+                "and leave the overdue list out\n"
+                "                             of the export entirely "
+                "(an alias: --ignore-overdue)."),
         parents=[common],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1328,6 +1372,7 @@ def build_parser() -> argparse.ArgumentParser:
                    "  #errands          context\n"
                    "  #home>kitchen     subcontext (#parent>child nests)\n"
                    "  /Garden fence/    project (only if one exists by that name)\n"
+                   "  /a/Home admin/    area, named outright\n"
                    "  <tomorrow         start / defer date\n"
                    "  >friday           deadline\n"
                    "  ~every week       repeat rule\n"
@@ -1573,7 +1618,7 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("action", nargs="?", choices=("show", "set"), default="show")
     node.add_argument("key", nargs="?",
                         help="due_time, time_format, theme, auto_remove_* or "
-                             "*_retention_days")
+                             "*_retention_days, fullscreen_default_view")
     node.add_argument("value", nargs="?")
 
     node = add("calendar", cmd_calendar, "month or range view of commitments",
@@ -1634,21 +1679,45 @@ def build_parser() -> argparse.ArgumentParser:
                            "exports; pass '' to add none)")
     node.add_argument("--dry-run", action="store_true", help="report without writing")
 
+    node = add("import-lines", cmd_import_lines,
+               "import a text file, one capture command per line",
+               aliases=("import-txt",),
+               description=(
+                   "Every non-empty line of a text file is one line of quick "
+                   "entry:\n"
+                   "  !                flag it\n"
+                   "  #errands          context\n"
+                   "  #home>kitchen     subcontext (#parent>child nests)\n"
+                   "  /Garden fence/    project (made if it does not exist)\n"
+                   "  /a/Home admin/    area (made if it does not exist)\n"
+                   "  <tomorrow         start / defer date\n"
+                   "  >friday           deadline\n"
+                   "  ~every week       repeat rule\n"
+                   "  *1h  *1h30m       estimated effort\n"
+                   "A line that cannot become a task is reported with its line "
+                   "number and the rest still import; a project or an area the "
+                   "file names is created with the tasks that belong to it."))
+    node.add_argument("source", help="the text file to read")
+    node.add_argument("--tag", "-t", help="add a context to every imported line")
+    node.add_argument("--dry-run", action="store_true", help="report without writing")
+
     node = add("export", cmd_export, "export everything")
     node.add_argument("--format", choices=("json", "csv", "ofxml", "zip"), default="json")
     node.add_argument("-o", "--output", help="write to this file")
 
     node = add("export-day", cmd_export_day,
-                "write one day's commitments to a file",
+                "write one day's commitments to a file "
+                "(--no-overdue leaves the overdue list out)",
                 aliases=("day-export",),
                 description=("What falls due on a date, whatever has been "
                              "deferred on or before it, and what finished it — or "
                              "every task for a context, stamped with the moment "
                              "the export was taken, in markdown, HTML, JSON, YAML "
-                             "or PDF. --no-overdue leaves the day's already-past "
-                             "deadlines out. The day, the format and the "
-                             "destination are all arguments; with no destination "
-                             "the text formats go to standard out."))
+                             "or PDF. --no-overdue leaves the overdue list out of "
+                             "the export whole, along with any of the day's own "
+                             "deadlines that has already passed. The day, the "
+                             "format and the destination are all arguments; with "
+                             "no destination the text formats go to standard out."))
     node.add_argument("date", nargs="?", help="the day, today by default")
     node.add_argument("-o", "--output", help="the output file (default: stdout)")
     node.add_argument("-f", "--format", dest="fmt",
@@ -1661,7 +1730,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="export all tasks for this context/tag (can be repeated)")
     node.add_argument("--no-overdue", "--ignore-overdue", dest="no_overdue",
                       action="store_true",
-                      help="leave out tasks whose deadline has already passed")
+                      help="leave the overdue list out of the export whole, "
+                           "and any of the day's own deadlines already passed "
+                           "— with no effect on a context export")
 
     node = add("export-context", cmd_export_context,
                 "write every task for a context to a file",

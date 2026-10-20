@@ -129,15 +129,19 @@ def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
     on the 5th and everything available by the 5th, and nothing else. Work
     finished that day is written too, when the date is today. Within each
     group the tasks are ordered by deadline and the ones with no deadline
-    come last. `no_overdue` leaves out the day's work whose own deadline has
-    already passed by that date, so the day's list keeps only what is still
-    live.
+    come last. `no_overdue` leaves the overdue list out of the document whole:
+    the export then holds only the day's own deadline -- and what finished that
+    day, when the day is today -- with nothing carried over from another day.
+    The day's own deadline is read against the clock too, so a task whose
+    deadline has already gone by, an earlier hour of that day included, is not
+    written either.
 
     When one or more contexts are named with `tags` the export is about the
     context instead of the date: every open task carrying one of those contexts
     -- or a context nested beneath one -- is written, whatever its dates, and
     the calendar is not consulted at all -- no date decides whether a task is
-    listed, nor how the list is grouped. The same dictionary drives every
+    listed, nor how the list is grouped -- so `no_overdue`, being a date's
+    question, changes nothing here. The same dictionary drives every
     renderer, and a date that is the day it was taken for, not the day it
     happens to be read on: re-running the export the next morning still reports
     the day the file names. `command` is the command line the file was produced
@@ -153,6 +157,12 @@ def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
         groups = _CONTEXT_GROUPS
     else:
         groups = groups or _GROUPS
+        if no_overdue:
+            # The overdue list is what the flag exists to keep out, so the
+            # group is dropped before anything is collected for it: the
+            # document carries no "overdue" key at all, and the renderers --
+            # which walk the document's own groups -- print no such section.
+            groups = tuple(name for name in groups if name != "overdue")
 
     raw: dict[str, list[dict]] = {name: [] for name in groups}
     if "context" in groups:
@@ -171,20 +181,23 @@ def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
         # takes only the rest -- including a task with no deadline at all,
         # which the due clause cannot reach.
         if "due" in groups:
+            # With `no_overdue` the day's own deadline is read against the
+            # clock: one already gone by here and now is expired, an earlier
+            # hour of the same day included.
+            clause = (" AND t.due_at IS NOT NULL AND substr(t.due_at, 1, 10) = ? "
+                      + ("AND t.due_at >= ? " if no_overdue else ""))
+            params: list = [day] + ([now_stamp()] if no_overdue else [])
             raw["due"] = [dict(r) for r in store.query(
                 "SELECT * FROM item_titles t WHERE " + _open_action_filter()
-                + " AND t.due_at IS NOT NULL AND substr(t.due_at, 1, 10) = ? "
-                "ORDER BY t.due_at, t.priority DESC", (day,))]
+                + clause
+                + "ORDER BY t.due_at, t.priority DESC", tuple(params))]
         if "overdue" in groups:
             # A task whose defer window is open but whose deadline is another
-            # day. With `no_overdue` the ones already past are left out, so a
-            # late task stops cluttering the day it was carried into.
+            # day. The group is only asked for when the export is meant to
+            # carry it: `no_overdue` drops it above, before this runs.
             clause = (" AND t.defer_at IS NOT NULL AND substr(t.defer_at, 1, 10) <= ? "
                       "AND (t.due_at IS NULL OR substr(t.due_at, 1, 10) != ?) ")
             params = [day, day]
-            if no_overdue:
-                clause += "AND (t.due_at IS NULL OR substr(t.due_at, 1, 10) >= ?) "
-                params.append(day)
             raw["overdue"] = [dict(r) for r in store.query(
                 "SELECT * FROM item_titles t WHERE " + _open_action_filter()
                 + clause

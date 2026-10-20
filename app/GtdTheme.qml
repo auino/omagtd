@@ -170,17 +170,42 @@ QtObject {
   // A caller that has already decided whether the task is in its defer window
   // (the calendar shows due days as ordinary tasks) passes that decision in as
   // `deferred`; otherwise the future-date check is used.
-  function colorFor(item, late, fallback, deferred) {
-     if (!item) return fallback
-     if (item.status === "done" || item.status === "archived") return green
+  //
+  // The decision is kept first as a name, because the calendar only needs to
+  // know which colour a task wears — it counts them. Reading the name from the
+  // same place the rows do is what keeps a purple row from sitting under a red
+  // mark. "plain" is the one state with no colour of its own: it takes the
+  // caller's own text colour instead.
+  function colorKeyFor(item, late, deferred) {
+     if (!item) return "plain"
+     if (item.status === "done" || item.status === "archived") return "green"
      var waiting = item.status === "waiting"
-     if (waiting && late) return purple
-     if (late) return red
-     if (waiting) return blue
-     if (deferred === undefined ? isDeferred(item) : deferred) return grey
-     if (item.priority > 0) return orange
-     return fallback
+     if (waiting && late) return "purple"
+     if (late) return "red"
+     if (waiting) return "blue"
+     if (deferred === undefined ? isDeferred(item) : deferred) return "grey"
+     if (item.priority > 0) return "orange"
+     return "plain"
    }
+
+  function colorFor(item, late, fallback, deferred) {
+    var key = colorKeyFor(item, late, deferred)
+    if (key === "plain") return fallback
+    if (key === "red") return red
+    if (key === "purple") return purple
+    if (key === "blue") return blue
+    if (key === "orange") return orange
+    if (key === "green") return green
+    return grey
+  }
+
+  // The mark one task earns on the calendar grid: its row's colour, with the
+  // grid's neutral grey standing in for a plain task — a dot needs a colour,
+  // and grey is the "nothing is wrong with this one" of the grid.
+  function markKeyFor(item, late, deferred) {
+    var key = colorKeyFor(item, late, deferred)
+    return key === "plain" ? "grey" : key
+  }
 
   // The mark in front of a title, built from what is true of the item right
   // now rather than picked from a fixed order, so every state that earns a

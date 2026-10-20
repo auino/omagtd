@@ -88,11 +88,16 @@ FocusScope {
     if (root.opened) return
     root.opened = true
     if (root.sibling && root.sibling.opened) root.sibling.close()
-    // Every opening lands on Today. Creating or opening a task is the one
-    // carve-out: BarWidget calls showItem() right after this, which hands the
-    // pane over to the editor regardless of which view was picked here.
-    var today = root.viewIndexFor("today")
-    if (root.viewIndex !== today) root.viewIndex = today
+    // Opening lands on the view the settings name. Creating or opening a task
+    // is the carve-out: BarWidget calls showItem() right after this, which
+    // hands the pane over to the editor regardless of which view was picked
+    // here. On a cold open the read that names that view can still be in
+    // flight, so the choice is parked until it lands instead of guessed.
+    if (root.defaultViewKnown) {
+      root.landOnDefaultView()
+    } else {
+      root.pendingStartView = true
+    }
     root.reload()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -299,6 +304,16 @@ readonly property var primaryViews: [
     // The narrowest the window gets before the layout drops to a message
     // asking to enlarge it, mirrored from the same setting in the database.
     property int fullscreenWidthLimit: 768
+    // The view an opening lands on: "inbox", "calendar" or "today", mirrored
+    // from the same setting. An unknown value falls back to today, so a value
+    // written by some other build can never open somewhere odd.
+    property string defaultView: "today"
+    // Whether that setting has ever arrived from the database. The first open
+    // can beat the very first settings read, so the landing view waits for it.
+    property bool defaultViewKnown: false
+    // Set by `open()` while that read is still in flight: land on the default
+    // view as soon as it arrives instead of wherever the pane happens to start.
+    property bool pendingStartView: false
 
     // Bundled app icon: the plugin's app/icon.png, shown in the hero.
     property url appIcon: Qt.resolvedUrl("icon.png")
@@ -610,11 +625,19 @@ readonly property var primaryViews: [
     // Everything that does not depend on the selection arrives in one call.
     // The middle column is (re)loaded once that lands, so it reads the freshest
     // containers.
-    if (!root.statePending) {
-      root.statePending = true
-      exec(stateProc, [root.cli, "state", "--json"])
-    }
+    root.loadState()
   }
+
+  // That one call. It also runs by itself when the app is built, so the
+  // settings — and with them the view an opening lands on — are already in
+  // place by the first time anything opens.
+  function loadState() {
+    if (root.statePending) return
+    root.statePending = true
+    exec(stateProc, [root.cli, "state", "--json"])
+  }
+
+  Component.onCompleted: root.loadState()
 
   // Fold one `gtd state` payload into the panel, then refresh whichever column
   // the keyboard is looking at.
@@ -655,7 +678,34 @@ readonly property var primaryViews: [
     root.appTheme = d.theme || "omarchy"
     root.fullscreenWidthLimit = d.fullscreen_width_limit !== undefined
       ? Number(d.fullscreen_width_limit) : 768
+    root.defaultView = d.fullscreen_default_view || "today"
     gtdTheme.applyPreset(root.appTheme)
+    // The first landing view has been waiting for this; later opens read it
+    // straight off the property. Changing the setting while the app is up only
+    // moves the tick, never the pane under the keyboard.
+    if (!root.defaultViewKnown) {
+      root.defaultViewKnown = true
+      if (root.pendingStartView) { root.pendingStartView = false; root.landOnDefaultView() }
+    }
+  }
+
+  // The one view `open()` aims for, resolved against the three the setting
+  // offers and clamped to today when the stored value is not one of them.
+  function landOnDefaultView() {
+    var key = root.defaultView
+    if (key !== "inbox" && key !== "calendar" && key !== "today") key = "today"
+    var start = root.viewIndexFor(key)
+    if (root.viewIndex !== start) root.viewIndex = start
+  }
+
+  // Turn the settings that name the landing view: the tick moves at once and
+  // the pane under the keyboard waits for the next open, since this only names
+  // where an opening starts.
+  function chooseDefaultView(view) {
+    if (root.defaultView === view) return
+    root.defaultView = view
+    root.run(["settings", "set", "fullscreen_default_view", view],
+             "opens on " + view)
   }
 
   // After the state lands, re-point the middle column at whatever is selected:
@@ -1526,16 +1576,17 @@ readonly property var primaryViews: [
 
   function pad2(n) { return (n < 10 ? "0" : "") + n }
 
-  // What the calendar symbols mean, per day. Every rule is separate, so one
-  // task can earn several different marks: a task that has expired, is waiting
-  // on someone and is flagged shows the red, orange, blue and purple all at
-  // once. Grey is the plain backlog — not expired, not flagged. Green is a
-  // task finished on that day; it only earns a mark when the completed knob
-  // is on, so done work stays off the grid by default.
+  // What the calendar shows for a day: one mark per task, in exactly the
+  // colour that task wears in the list the day opens — so a waiting task that
+  // has slipped past its date reads purple on both sides of the click, never a
+  // red mark over a purple row. The name comes from `gtdTheme.markKeyFor`, the
+  // same decision `colorFor` makes, which is why the two cannot disagree.
+  // Finished work counts only when the completed knob is on, so it stays off
+  // the grid by default.
   function calendarMarks(cell) {
     var marks = { red: 0, orange: 0, blue: 0, purple: 0, grey: 0, green: 0 }
     if (!cell) return marks
-    var openGroups = { overdue: true, due: false, scheduled: false }
+    var today = String(root.today || root.nowStamp()).slice(0, 10)
     var names = ["overdue", "due", "scheduled", "completed"]
     for (var n = 0; n < names.length; n++) {
       var list = cell[names[n]] || []
@@ -1544,16 +1595,36 @@ readonly property var primaryViews: [
         var complete = entry.status === "done" || entry.status === "archived"
         if (complete) { if (root.showCompleted) marks.green += 1; continue }
         var late = names[n] === "overdue" || root.isLate(entry)
-        var waiting = entry.status === "waiting"
-        var flagged = (entry.priority || 0) > 0
-        if (late) marks.red += 1
-        if (flagged) marks.orange += 1
-        if (late && waiting) marks.blue += 1
-        if (late && waiting && flagged) marks.purple += 1
-        if (!late && !flagged) marks.grey += 1
+        var deferred = gtdTheme.isDeferred(entry)
+          || gtdTheme.scheduledIntoToday(entry, today)
+        marks[gtdTheme.markKeyFor(entry, late, deferred)] += 1
       }
     }
     return marks
+  }
+
+  // The colour a late day's number wears: the colour its expired work wears in
+  // the list below it, red when ordinary work has slipped and purple when only
+  // waiting work has. One ordinary expiry outranks any number of waiting ones —
+  // the worst of the day is what the day announces. A day whose only expired
+  // entries are finished gets no answer here and keeps the red it has always
+  // had.
+  function lateTone(cell) {
+    if (!cell) return null
+    var names = ["overdue", "due", "scheduled"]
+    var slipped = false
+    for (var n = 0; n < names.length; n++) {
+      var list = cell[names[n]] || []
+      for (var i = 0; i < list.length; i++) {
+        var entry = list[i]
+        if (entry.status === "done" || entry.status === "archived") continue
+        var late = names[n] === "overdue" || root.isLate(entry)
+        if (!late) continue
+        if (gtdTheme.colorKeyFor(entry, true, false) === "red") return "red"
+        slipped = true
+      }
+    }
+    return slipped ? "purple" : null
   }
 
   // How many symbols a day actually shows: its marks, minus the green ones
@@ -1597,6 +1668,7 @@ readonly property var primaryViews: [
           isToday: key === root.today,
           count: cell.count || 0,
           late: late,
+          lateTone: root.lateTone(cell),
           overdue: (cell.overdue || []).length,
           due: (cell.due || []).length,
           scheduled: (cell.scheduled || []).length,
@@ -3805,8 +3877,9 @@ readonly property var primaryViews: [
                       textFormat: Text.PlainText
                       text: calCell.modelData.day
                       color: !calCell.modelData.inMonth ? root.dim
-                        : calCell.modelData.late ? root.urgent
-                        : root.textColor
+                        : !calCell.modelData.late ? root.textColor
+                        : calCell.modelData.lateTone === "purple" ? gtdTheme.purple
+                        : gtdTheme.red
                       font.family: root.fontFamily
                       font.pixelSize: Style.font.caption
                       font.bold: calCell.modelData.isToday
@@ -4099,6 +4172,60 @@ readonly property var primaryViews: [
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   text: "px (768 by default)"
+                }
+              }
+
+              PanelSectionHeader {
+                width: parent.width
+                text: "Opening"
+                foreground: root.dim
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: "Which view the app lands on when it opens: Today unless "
+                      + "you pick another. It only names the starting point — "
+                      + "the keyboard still moves anywhere else from there."
+              }
+
+              Flow {
+                width: parent.width
+                spacing: Style.spacing.xs
+
+                Button {
+                  text: (root.defaultView === "inbox" ? "✓ " : "") + "Inbox"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: root.chooseDefaultView("inbox")
+                }
+
+                Button {
+                  text: (root.defaultView === "calendar" ? "✓ " : "") + "Calendar"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: root.chooseDefaultView("calendar")
+                }
+
+                Button {
+                  text: (root.defaultView === "today" ? "✓ " : "") + "Today"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  enabled: !root.busy
+                  onClicked: root.chooseDefaultView("today")
                 }
               }
 
@@ -4437,11 +4564,12 @@ readonly property var primaryViews: [
                  color: root.dim
                  font.family: root.fontFamily
                  font.pixelSize: Style.font.caption
-                 text: "Its days carry a coloured mark per matching state. "
-                        + "Red is expired, orange is flagged, blue is expired "
-                        + "waiting, purple is expired waiting and flagged, "
-                        + "grey is the plain backlog. Finished tasks stay off "
-                        + "the grid unless you ask for them."
+                  text: "Its days carry one coloured mark per task, in the "
+                         + "colour that task wears in the list the day opens. "
+                         + "Red is expired, purple is expired waiting, blue is "
+                         + "waiting, orange is flagged, grey is plain or not "
+                         + "yet due. Finished tasks stay off the grid unless "
+                         + "you ask for them."
                  }
 
                Flow {

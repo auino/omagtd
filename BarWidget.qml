@@ -25,7 +25,7 @@ BarWidget {
   readonly property int dueTodayLate: panel ? panel.dueTodayLate : 0
   readonly property int overdue: panel ? panel.overdue : 0
   readonly property int archived: panel ? panel.archived : 0
-  readonly   property int flagged: panel ? panel.flagged : 0
+  readonly property int flagged: panel ? panel.flagged : 0
   readonly property int flaggedToday: panel ? panel.flaggedToday : 0
 
   // Settings.

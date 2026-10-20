@@ -904,7 +904,9 @@ def normalize_inbox(store: Store, item_id: str) -> None:
     The inbox is every action with no project/area and no context: give it one
     of those and it becomes active (available); take the last one away and it
     falls back to the inbox. Waiting, someday, reference and the closed states
-    are deliberate and stay where they are.
+    are deliberate and stay where they are — a waiting action with no home is
+    the one exception in looks only: the inbox view lists it, its status does
+    not move, so it stays in the waiting view too.
     """
     row = store.one("SELECT kind, status, parent_id FROM items WHERE id = ?",
                     (item_id,))
@@ -2086,7 +2088,15 @@ def mark_reviewed(store: Store, ref: str | None = None, *, tag: str | None = Non
 # area names, and always with a WHERE clause so list_view can add a filter.
 
 VIEW_SQL = {
-    "inbox": "FROM item_titles t WHERE t.status = 'inbox' AND t.kind = 'action' "
+    # The inbox, plus a task parked as `waiting` that never got a home: it is
+    # as unorganized as any capture, so it is listed here too — keeping its
+    # status, which is why the waiting view still has it. The condition is the
+    # schema's `inbox` view, spelled out for `item_titles`.
+    "inbox": "FROM item_titles t WHERE t.kind = 'action' "
+             "AND (t.status = 'inbox' OR "
+             "(t.status = 'waiting' AND t.parent_id IS NULL "
+             "AND NOT EXISTS (SELECT 1 FROM item_tags it "
+             "WHERE it.item_id = t.id))) "
              "ORDER BY t.created_at",
     "clarify": "FROM item_titles t WHERE t.id IN (SELECT id FROM clarify_queue)",
     "focus": "FROM item_titles t WHERE t.id IN (SELECT id FROM next_actions) "
@@ -2356,6 +2366,10 @@ SETTING_DEFAULTS = {
       # asking to enlarge it. Below this the columns do not fit, so the app
       # says so rather than drawing a cramped layout.
       "fullscreen_width_limit": "768",
+      # The view the full-screen app lands on when it opens. Today unless you
+      # ask otherwise: opening somewhere calmer is a deliberate choice, not
+      # something to set every session.
+      "fullscreen_default_view": "today",
       }
 
 # Every spelling people actually type for a switch, folded to the two that are
@@ -2454,6 +2468,12 @@ def set_setting(store: Store, key: str, value: str) -> str:
             raise GtdError(
                 f"fullscreen_width_limit must be a positive whole number of "
                 f"pixels, not {value!r}")
+    elif key == "fullscreen_default_view":
+        value = str(value).strip().lower()
+        if value not in ("inbox", "calendar", "today"):
+            raise GtdError(
+                f"fullscreen_default_view must be inbox, calendar or today, "
+                f"not {value!r}")
     else:
         raise GtdError(f"unknown setting: {key!r}")
     store.set_meta(key, value)

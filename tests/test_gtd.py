@@ -716,6 +716,72 @@ class Views(TempStore):
         self.assertIn("today", snapshot)
 
 
+class InboxWaiting(TempStore):
+    """A task parked as `waiting` before it ever had a home is still an
+    inbox item: it is as unorganized as any capture, and it keeps its status
+    while it is listed there."""
+
+    def titles(self, view):
+        return [item["title"] for item in core.list_view(self.store, view)]
+
+    def park(self, text, **kwargs):
+        item = self.capture(text, **kwargs)
+        return core.clarify(self.store, item["id"], "wait")
+
+    def test_a_waiting_task_with_no_home_is_shown_in_the_inbox(self):
+        parked = self.park("Chase the bank")
+        self.assertEqual(parked["status"], "waiting")
+        self.assertIn("Chase the bank", self.titles("inbox"))
+        # Listed in both: the decision to park it is not undone by showing it.
+        self.assertIn("Chase the bank", self.titles("waiting"))
+
+    def test_a_waiting_task_with_a_home_stays_out_of_the_inbox(self):
+        core.ensure_container(self.store, "Garden fence", core.PROJECT)
+        self.park("Wait on the latch", project="Garden fence")
+        self.park("Wait on the garden #home")
+        self.assertEqual(self.titles("inbox"), [])
+        self.assertIn("Wait on the latch", self.titles("waiting"))
+        self.assertIn("Wait on the garden", self.titles("waiting"))
+
+    def test_the_counters_count_it_alongside_the_list(self):
+        self.park("Chase the bank")
+        stats = core.stats(self.store)
+        self.assertEqual(stats["inbox"], 1)
+        # The waiting count keeps counting it where it is parked, once.
+        self.assertEqual(stats["waiting"], 1)
+        self.assertEqual(core.bar_snapshot(self.store)["inbox"], 1)
+
+    def test_the_schema_view_agrees_with_the_list(self):
+        parked = self.park("Chase the bank")
+        listed = [item["id"] for item in core.list_view(self.store, "inbox")]
+        schema = [row["id"] for row in self.store.query("SELECT id FROM inbox")]
+        self.assertEqual(listed, schema)
+        self.assertIn(parked["id"], schema)
+        # The clarify queue is untouched: it is the step-2 list of captures
+        # nobody has decided about yet, and this one has been decided.
+        self.assertEqual(self.titles("clarify"), [])
+
+    def test_an_old_inbox_view_is_rebuilt_on_open(self):
+        # A database written before this rule keeps `status = 'inbox'` alone,
+        # and CREATE VIEW IF NOT EXISTS never replaces a view — so the reopen
+        # has to notice the old body and drop it. Only the view moves; no row
+        # is rewritten, because the task's status is not the thing that
+        # changed.
+        self.park("Chase the bank")
+        self.store.db.execute("DROP VIEW IF EXISTS inbox")
+        self.store.db.execute(
+            "CREATE VIEW inbox AS SELECT * FROM items "
+            "WHERE status = 'inbox' ORDER BY created_at")
+        self.assertEqual([r["title"] for r in self.store.query("SELECT * FROM inbox")],
+                         [])
+        self.store.ensure()
+        self.assertIn("Chase the bank",
+                      [r["title"] for r in self.store.query("SELECT * FROM inbox")])
+        self.assertEqual(core.get(self.store, self.store.one(
+            "SELECT id FROM items WHERE title = 'Chase the bank'")["id"])["status"],
+            "waiting")
+
+
 class TodayView(TempStore):
     def test_holds_due_today_and_deferred_work_in_its_window(self):
         self.capture("Due today", due="today")
@@ -1262,6 +1328,129 @@ class ImportTag(TempStore):
         self.addCleanup(target.close)
         importer.import_csv(target, "title\nAlpha\n")
         self.assertEqual(self.tags_of(target, "Alpha"), [])
+
+
+class ImportLines(TempStore):
+    """A text file of quick-entry lines: one task per line, containers and all."""
+
+    def write(self, name, text):
+        path = os.path.join(self.home, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def actions(self):
+        return sorted(r["title"] for r in self.store.query(
+            "SELECT title FROM items WHERE kind = 'action'"))
+
+    def item(self, title):
+        return self.store.one("SELECT * FROM items WHERE title = ?", (title,))
+
+    def tags_of(self, title):
+        return core.tags_of(self.store, self.item(title)["id"])
+
+    def test_each_line_is_one_quick_entry_line(self):
+        path = self.write("lines.txt",
+                          "Water the plants #home\n"
+                          "\n"
+                          "! Call the dentist #errands >friday\n"
+                          "*30m Buy the filter #home>kitchen\n")
+        result = importer.import_lines(self.store, path)
+        self.assertEqual(
+            {"lines": result["lines"], "blank": result["blank"],
+             "imported": result["imported"], "failed": result["failed"]},
+            {"lines": 3, "blank": 1, "imported": 3, "failed": 0})
+        self.assertEqual(self.actions(),
+                         ["Buy the filter", "Call the dentist", "Water the plants"])
+        self.assertEqual(self.tags_of("Water the plants"), ["home"])
+        self.assertEqual(self.tags_of("Buy the filter"), ["home>kitchen"])
+        dentist = self.item("Call the dentist")
+        self.assertEqual(dentist["priority"], 1)
+        self.assertTrue(dentist["due_at"].startswith(
+            dates.parse_when("friday").strftime("%Y-%m-%d")))
+        self.assertEqual(self.item("Buy the filter")["duration"], 30)
+        self.assertEqual(result["contexts"], ["errands", "home", "home>kitchen"])
+        # The subcontext nests rather than standing beside its parent.
+        parent = self.store.one("SELECT id FROM tags WHERE name = ?", ("home",))
+        nested = self.store.one("SELECT parent_id FROM tags WHERE name = ?",
+                                ("home>kitchen",))
+        self.assertEqual(nested["parent_id"], parent["id"])
+
+    def test_the_containers_a_file_names_are_made_with_its_tasks(self):
+        path = self.write("lines.txt",
+                          "/Garden fence/ buy the panels #outdoor\n"
+                          "/Garden fence/ order the bolts #outdoor\n"
+                          "/a/Home admin/ file the taxes\n")
+        result = importer.import_lines(self.store, path)
+        self.assertEqual(result["projects"], ["Garden fence"])
+        self.assertEqual(result["areas"], ["Home admin"])
+        fence, area = self.item("Garden fence"), self.item("Home admin")
+        self.assertEqual(fence["kind"], "project")
+        self.assertEqual(area["kind"], "area")
+        # The second line joins the project the first one made, and the area
+        # takes its action directly — the shape `capture --area` gives.
+        self.assertEqual(self.item("order the bolts")["parent_id"], fence["id"])
+        self.assertEqual(self.item("file the taxes")["parent_id"], area["id"])
+
+    def test_a_line_that_fails_is_reported_and_the_rest_import(self):
+        path = self.write("lines.txt", "#errands\nGood line #home\n")
+        result = importer.import_lines(self.store, path)
+        self.assertEqual((result["imported"], result["failed"]), (1, 1))
+        self.assertEqual(result["errors"][0]["line"], 1)
+        self.assertIn("nothing to capture", result["errors"][0]["error"])
+        self.assertEqual(self.actions(), ["Good line"])
+
+    def test_a_line_that_fails_halfway_leaves_no_container_behind(self):
+        # The project is made before the dates are checked, so a line has to
+        # write as one thing or the database keeps a project nobody asked for.
+        path = self.write("lines.txt",
+                          "/Garden fence/ too late <2026-12-01 >2026-11-01\n"
+                          "Fine line #home\n")
+        result = importer.import_lines(self.store, path)
+        self.assertEqual((result["imported"], result["failed"]), (1, 1))
+        self.assertIn("must not be after", result["errors"][0]["error"])
+        self.assertEqual(self.actions(), ["Fine line"])
+        self.assertIsNone(self.store.one(
+            "SELECT id FROM items WHERE kind IN ('project', 'area')"))
+        self.assertEqual(result["projects"], [])
+
+    def test_dry_run_rehearses_the_file_and_undoes_it(self):
+        path = self.write("lines.txt",
+                          "/Garden fence/ buy the panels #outdoor\n"
+                          "Water the plants #home\n")
+        result = importer.import_lines(self.store, path, dry_run=True)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["imported"], 2)
+        self.assertEqual(result["projects"], ["Garden fence"])
+        self.assertEqual(self.store.scalar("SELECT COUNT(*) FROM items"), 0)
+        # The same file then imports for real.
+        importer.import_lines(self.store, path)
+        self.assertEqual(self.store.scalar(
+            "SELECT COUNT(*) FROM items WHERE kind = 'action'"), 2)
+        self.assertEqual(self.actions(), ["Water the plants", "buy the panels"])
+
+    def test_the_extra_context_reaches_every_line(self):
+        path = self.write("lines.txt", "One #home\nTwo\n")
+        result = importer.import_lines(self.store, path, tag="batch")
+        self.assertEqual(result["tag"], "batch")
+        self.assertEqual(self.tags_of("One"), ["batch", "home"])
+        self.assertEqual(self.tags_of("Two"), ["batch"])
+        self.assertEqual(result["contexts"], ["batch", "home"])
+
+    def test_a_file_that_imports_nothing_at_all_fails(self):
+        path = self.write("lines.txt", "#errands\n")
+        with self.assertRaises(GtdError) as caught:
+            importer.import_lines(self.store, path)
+        self.assertIn("nothing imported", str(caught.exception))
+        self.assertEqual(self.store.scalar("SELECT COUNT(*) FROM items"), 0)
+        # The rehearsal of the same file must not leave a transaction open.
+        with self.assertRaises(GtdError):
+            importer.import_lines(self.store, path, dry_run=True)
+        self.assertFalse(self.store.db.in_transaction)
+
+    def test_a_missing_file_is_refused(self):
+        with self.assertRaises(GtdError):
+            importer.import_lines(self.store, os.path.join(self.home, "nope.txt"))
 
 
 class Database(TempStore):
@@ -2344,7 +2533,8 @@ class Settings(TempStore):
                           "archive_retention_days": "0",
                           "calendar_show_completed": "off",
                           "theme": "omarchy",
-                          "fullscreen_width_limit": "768"})
+                          "fullscreen_width_limit": "768",
+                          "fullscreen_default_view": "today"})
 
         self.assertEqual(core.set_setting(self.store, "due_time", "7:30"), "07:30")
         self.assertEqual(core.set_setting(self.store, "defer_time", "8:30"), "08:30")
@@ -2387,6 +2577,18 @@ class Settings(TempStore):
         self.assertEqual(core.settings(self.store)["calendar_show_completed"], "on")
         self.assertEqual(core.set_setting(self.store, "calendar_show_completed", "off"), "off")
 
+        # The view the fullscreen app opens on is one of three names, today by
+        # default; the spelling people type is folded to it.
+        self.assertEqual(core.settings(self.store)["fullscreen_default_view"], "today")
+        self.assertEqual(
+            core.set_setting(self.store, "fullscreen_default_view", "Inbox"), "inbox")
+        self.assertEqual(core.settings(self.store)["fullscreen_default_view"], "inbox")
+        self.assertEqual(
+            core.set_setting(self.store, "fullscreen_default_view", "CALENDAR"), "calendar")
+        self.assertEqual(core.settings(self.store)["fullscreen_default_view"], "calendar")
+        self.assertEqual(
+            core.set_setting(self.store, "fullscreen_default_view", "Today"), "today")
+
         with self.assertRaises(core.GtdError):
             core.set_setting(self.store, "due_time", "25:00")
         with self.assertRaises(core.GtdError):
@@ -2407,6 +2609,8 @@ class Settings(TempStore):
             core.set_setting(self.store, "fullscreen_width_limit", "0")
         with self.assertRaises(core.GtdError):
             core.set_setting(self.store, "fullscreen_width_limit", "-100")
+        with self.assertRaises(core.GtdError):
+            core.set_setting(self.store, "fullscreen_default_view", "projects")
         with self.assertRaises(core.GtdError):
             core.set_setting(self.store, "nonsense", "x")
 
@@ -2673,6 +2877,47 @@ class CommandLine(TempStore):
         self.assertEqual(listed["count"], 1)
         self.assertEqual(listed["items"][0]["id"], item_id)
 
+    def test_import_lines_reads_a_text_file(self):
+        path = os.path.join(self.home, "lines.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("Buy milk #errands\n\n/Garden fence/ buy timber\n")
+        data = self.run_cli("import-lines", path, "--tag", "batch")
+        self.assertTrue(data["ok"])
+        self.assertEqual((data["imported"], data["blank"]), (2, 1))
+        self.assertEqual(data["projects"], ["Garden fence"])
+        listed = self.run_cli("list", "focus", "--tag", "batch")
+        self.assertEqual(listed["count"], 2)
+        # The short name reads the same file.
+        again = self.run_cli("import-txt", path)
+        self.assertEqual(again["imported"], 2)
+
+    def test_a_file_with_no_importable_line_fails_the_command(self):
+        path = os.path.join(self.home, "lines.txt")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("#errands\n")
+        proc = self.run_cli_result("import-lines", path)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("nothing imported", proc.stdout)
+
+    def test_the_line_import_is_named_in_the_help(self):
+        top = self.run_cli_result("--help")
+        self.assertEqual(top.returncode, 0, top.stderr)
+        self.assertIn("import-lines", top.stdout)
+        page = self.run_cli_result("import-lines", "--help")
+        self.assertEqual(page.returncode, 0, page.stderr)
+        self.assertIn("one line of quick", page.stdout)
+
+    def test_list_inbox_shows_a_waiting_task_that_has_no_home(self):
+        item_id = self.run_cli("capture", "Chase the bank")["item"]["id"]
+        self.run_cli("engage", item_id, "wait")
+        listed = self.run_cli("list", "inbox")
+        self.assertEqual([i["title"] for i in listed["items"]], ["Chase the bank"])
+        self.assertEqual(listed["items"][0]["status"], "waiting")
+        # The parker's own view still has it, and the pill counts it once.
+        self.assertEqual([i["title"] for i in self.run_cli("list", "waiting")["items"]],
+                         ["Chase the bank"])
+        self.assertEqual(self.run_cli("stats")["inbox"], 1)
+
     def test_edit_retitle(self):
         item_id = self.run_cli("capture", "Fix gate")["item"]["id"]
         self.run_cli("edit", item_id, "--title", "Fix the garden gate")
@@ -2735,6 +2980,17 @@ class CommandLine(TempStore):
          # A day count: 0 keeps the container forever.
         turned = self.run_cli("settings", "set", "auto_remove_empty_projects", "0")
         self.assertEqual(turned["auto_remove_empty_projects"], "0")
+
+    def test_settings_command_names_the_view_the_app_opens_on(self):
+        self.assertEqual(self.run_cli("settings")["fullscreen_default_view"], "today")
+        turned = self.run_cli("settings", "set", "fullscreen_default_view", "calendar")
+        self.assertEqual(turned["fullscreen_default_view"], "calendar")
+
+         # A view that is not one of the three is refused, not stored.
+        proc = self.run_cli_result("settings", "set", "fullscreen_default_view", "next")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("inbox, calendar or today", json.loads(proc.stdout)["error"])
+        self.assertEqual(self.run_cli("settings")["fullscreen_default_view"], "calendar")
 
     def test_the_next_command_removes_an_empty_project_once_allowed(self):
         self.run_cli("project", "add", "Loose end")
@@ -3222,18 +3478,40 @@ class DayExport(TempStore):
         self.assertEqual([i["title"] for i in doc["groups"]["context"]],
                          ["Late", "Due soon", "Deferred", "No date"])
 
-    def test_the_day_export_can_leave_out_past_deadlines(self):
-        # A defer window that carried a task past its own deadline lands it in
-        # the day's list; --no-overdue keeps it out, work due today staying.
+    def test_no_overdue_leaves_the_overdue_list_out_whole(self):
+        # Work carried into today by its defer window is the Overdue group;
+        # --no-overdue drops that group from the document altogether, so the
+        # day's own deadline is all that is written.
         self.capture("Late", defer="-3d", due="-2d")
+        self.capture("Carried", defer="-3d")
         self.capture("Today", due="today")
         doc = exporter.day_export(self.store, "today")
         self.assertEqual([i["title"] for i in doc["groups"]["overdue"]],
-                         ["Late"])
+                         ["Late", "Carried"])
+        self.assertEqual([i["title"] for i in doc["groups"]["due"]], ["Today"])
         doc = exporter.day_export(self.store, "today", no_overdue=True)
-        self.assertEqual(doc["groups"]["overdue"], [])
+        self.assertNotIn("overdue", doc["groups"])
+        self.assertNotIn("overdue", doc["counts"])
+        titles = [i["title"] for i in doc["items"]]
+        self.assertNotIn("Late", titles)
+        self.assertNotIn("Carried", titles)
+
+    def test_no_overdue_counts_an_earlier_hour_of_the_day_as_expired(self):
+        # "Expired" is read against the clock, not the calendar: a deadline
+        # from an hour ago is left out even though it falls on the exported
+        # day, while one still to come that day is kept.
+        from unittest import mock
+        self.capture("Morning", due="2026-06-15 09:00")
+        self.capture("Evening", due="2026-06-15 18:00")
+        doc = exporter.day_export(self.store, "2026-06-15")
         self.assertEqual([i["title"] for i in doc["groups"]["due"]],
-                         ["Today"])
+                         ["Morning", "Evening"])
+        with mock.patch.object(exporter, "now_stamp",
+                               lambda: "2026-06-15 12:00"):
+            doc = exporter.day_export(self.store, "2026-06-15",
+                                      no_overdue=True)
+        self.assertEqual([i["title"] for i in doc["groups"]["due"]],
+                         ["Evening"])
 
     def test_no_overdue_does_not_narrow_a_context_export(self):
         # The flag is a date filter, so a context export -- which consults no
@@ -3475,17 +3753,36 @@ class DayExport(TempStore):
         self.assertIn("<h2>Context</h2>", html)
         self.assertNotIn("Future", html)
 
-    def test_cli_export_day_can_ignore_overdue_work(self):
-        # The flag is accepted on the day export and drops a past deadline.
+    def test_cli_export_day_can_leave_out_the_overdue_list(self):
+        # The flag is accepted on the day export: the file carries no Overdue
+        # section at all, and the work that would have sat in it is not written.
         self.capture("Late", defer="-3d", due="-2d")
-        self.capture("Today", due="today")
+        self.capture("Carried", defer="-3d")
+        plain = os.path.join(self.home, "plain.md")
+        proc = self.run_cli("export-day", "today", "-o", plain)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(plain) as handle:
+            self.assertIn("## Overdue", handle.read())
+
         target = os.path.join(self.home, "day.md")
         proc = self.run_cli("export-day", "today", "--no-overdue", "-o", target)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         with open(target) as handle:
             text = handle.read()
-        self.assertIn("Today", text)
+        self.assertNotIn("## Overdue", text)
         self.assertNotIn("Late", text)
+        self.assertNotIn("Carried", text)
+
+    def test_the_flag_is_named_in_the_command_line_help(self):
+        # A flag the help never names is a flag nobody finds: the top-level
+        # page says what it does, and the day export's own page lists it.
+        top = self.run_cli("--help")
+        self.assertEqual(top.returncode, 0, top.stderr)
+        self.assertIn("--no-overdue", top.stdout)
+        self.assertIn("leave the overdue list out", top.stdout)
+        page = self.run_cli("export-day", "--help")
+        self.assertEqual(page.returncode, 0, page.stderr)
+        self.assertIn("--no-overdue", page.stdout)
 
     def test_cli_export_context_needs_a_context(self):
         proc = self.run_cli("export-context")
