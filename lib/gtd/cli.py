@@ -315,7 +315,7 @@ def cmd_organize(args, out: Out, store: Store) -> dict:
         url=getattr(args, "link", None), clear_url=getattr(args, "unlink", False),
         attach=getattr(args, "attach", None) or (),
         unattach=getattr(args, "unattach", None) or (),
-        onhold=args.onhold)
+        onhold=args.onhold, someday=getattr(args, "someday", False))
     if out.json_mode:
         return {"ok": True, "item": item}
     out.line(f"{out.green('organized')}  {item['title']}")
@@ -375,7 +375,7 @@ def cmd_engage(args, out: Out, store: Store) -> dict:
     if out.json_mode:
         return {"ok": True, "item": item}
     verbs = {"done": "completed", "drop": "dropped", "start": "started",
-             "stop": "stopped", "wait": "waiting",
+             "stop": "stopped", "wait": "waiting", "someday": "someday/maybe",
              "resume": "resumed", "defer": "deferred to " + (args.when or ""),
              "flag": "flagged", "unflag": "unflagged",
              "archive": "archived", "unarchive": "unarchived",
@@ -1453,6 +1453,8 @@ def build_parser() -> argparse.ArgumentParser:
                       help="clear the effort estimate")
     node.add_argument("--inbox", action="store_true", help="send back to the inbox")
     node.add_argument("--onhold", action="store_true", help="pause this container")
+    node.add_argument("--someday", action="store_true",
+                      help="incubate it until review resurfaces it")
     node.add_argument("--repeat", help="set a repeat rule")
     node.add_argument("--no-repeat", action="store_true", help="stop repeating")
     organizing_flags(node)
@@ -1514,6 +1516,14 @@ def build_parser() -> argparse.ArgumentParser:
     node.add_argument("--notes", "-n")
     node.add_argument("--also-close", action="store_true")
     node.set_defaults(action="wait")
+
+    node = add("someday", cmd_engage, "incubate it until review resurfaces it")
+    node.add_argument("id")
+    node.add_argument("--when")
+    node.add_argument("--priority", "-p", type=int, choices=(0, 1))
+    node.add_argument("--notes", "-n")
+    node.add_argument("--also-close", action="store_true")
+    node.set_defaults(action="someday")
 
     # ---- containers: projects and areas
     for group in ("project", "area"):

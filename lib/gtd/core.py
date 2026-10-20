@@ -38,9 +38,9 @@ LIVE_SQL = "('inbox', 'active', 'waiting', 'onhold', 'someday', 'reference')"
 
 CLARIFY_OUTCOMES = ("actionable", "do-now", "defer", "wait", "someday",
                     "reference", "delete")
-ENGAGE_ACTIONS = ("start", "stop", "done", "undone", "drop", "wait", "resume",
-                  "defer", "flag", "unflag", "inbox", "archive", "unarchive",
-                  "trash")
+ENGAGE_ACTIONS = ("start", "stop", "done", "undone", "drop", "wait", "someday",
+                  "resume", "defer", "flag", "unflag", "inbox", "archive",
+                  "unarchive", "trash")
 REVIEW_INTERVALS = ("daily", "weekly", "monthly", "quarterly", "yearly", "never")
 
 
@@ -1080,7 +1080,7 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
              priority=None, notes=None, url=None, clear_url=False,
              attach=(), unattach=(),
              review=None, repeat=None, clear_repeat=False,
-             inbox=False, onhold=None, rank=None, title=None) -> dict:
+             inbox=False, onhold=None, someday=None, rank=None, title=None) -> dict:
     """Give an item its home, context, timing and flags."""
     item = find(store, ref)
     fields: dict = {}
@@ -1094,6 +1094,9 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
     if inbox:
         fields["status"] = "inbox"
         fields["parent_id"] = None
+    elif someday:
+        # Same truthiness rule as --onhold: the CLI flag defaults to False.
+        fields["status"] = "someday"
     elif onhold:
         # Truthiness, not `is not None`: the CLI's --onhold defaults to False,
         # and testing for None made that default swallow every --project and
@@ -1106,7 +1109,7 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
                            f"descendant {parent['title']}")
         fields["parent_id"] = parent["id"]
         fields["rank"] = _rank_next(store, parent["id"])
-        if item["status"] in ("inbox", "onhold"):
+        if item["status"] in ("inbox", "onhold", "someday"):
             fields["status"] = "active"
 
     if tags is not None:
@@ -1229,6 +1232,13 @@ def engage(store: Store, ref: str, action: str, *, when=None, priority=None,
         # Waiting is a decision: park the task until someone else moves it.
         _update(store, item["id"], status="waiting")
         store.log(item["id"], "wait", item["title"])
+        return get(store, item["id"])
+
+    if action == "someday":
+        # Someday/maybe is the same kind of decision as waiting: park the task
+        # out of Next until review resurfaces it. `resume` brings it back.
+        _update(store, item["id"], status="someday")
+        store.log(item["id"], "someday", item["title"])
         return get(store, item["id"])
 
     if action == "resume":

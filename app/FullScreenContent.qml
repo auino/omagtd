@@ -206,8 +206,8 @@ FocusScope {
   // and only these, so the keyboard matches what is on screen. The rest of
   // `views` stays reachable by name (`view <key>`) and by the number keys.
 readonly property var primaryViews: [
-                 ["inbox"],
-                  ["calendar", "waiting", "review"],
+                 ["inbox", "review"],
+                  ["calendar", "waiting", "someday"],
                   ["overdue", "today", "forecast"]
                 ]
   readonly property var primaryKeys: {
@@ -347,6 +347,12 @@ readonly property var primaryViews: [
   readonly property bool editWait: {
     var item = root.detail && (root.detail.item || root.detail)
     return !!(item && item.status === "waiting")
+  }
+  // Someday is the same kind of switch as waiting: an on/off state read off
+  // the item, not a name to type.
+  readonly property bool editSomeday: {
+    var item = root.detail && (root.detail.item || root.detail)
+    return !!(item && item.status === "someday")
   }
   property string editDue: ""
   property string editDefer: ""
@@ -1584,7 +1590,7 @@ readonly property var primaryViews: [
   // Finished work counts only when the completed knob is on, so it stays off
   // the grid by default.
   function calendarMarks(cell) {
-    var marks = { red: 0, orange: 0, blue: 0, purple: 0, grey: 0, green: 0 }
+    var marks = { red: 0, orange: 0, blue: 0, purple: 0, pink: 0, grey: 0, green: 0 }
     if (!cell) return marks
     var today = String(root.today || root.nowStamp()).slice(0, 10)
     var names = ["overdue", "due", "scheduled", "completed"]
@@ -1631,7 +1637,7 @@ readonly property var primaryViews: [
   // that are only earned when the completed knob is on.
   function calendarMarkTotal(cell) {
     var m = root.calendarMarks(cell)
-    return m.red + m.orange + m.blue + m.purple + m.grey + m.green
+    return m.red + m.orange + m.blue + m.purple + m.pink + m.grey + m.green
   }
 
   function buildCalendarWeeks(data) {
@@ -2198,6 +2204,7 @@ readonly property var primaryViews: [
       else if (name === "start") root.run(["start", id])
       else if (name === "stop") root.run(["stop", id])
       else if (name === "wait") root.run(["engage", id, "wait"])
+      else if (name === "someday") root.run(["engage", id, "someday"])
       else if (name === "resume") root.run(["engage", id, "resume"])
       else if (name === "hold") root.run(["edit", id, "--onhold"])
       else if (name === "flag") root.run(["flag", id])
@@ -3027,6 +3034,7 @@ readonly property var primaryViews: [
       else if (t === "d" || t === "D") root.act("done")
       else if (t === "f" || t === "F") root.toggleFlag()
       else if (t === "w" || t === "W") root.toggleWait()
+      else if (t === "y" || t === "Y") root.toggleSomeday()
       else if (t === "i" || t === "I") root.act("inbox")
       else if (t === "x" || t === "X") root.act("drop")
       else if (t === "s" || t === "S") root.showSettings()
@@ -3061,6 +3069,15 @@ readonly property var primaryViews: [
     if (!target) return
     var raw = target.raw || {}
     root.act(raw.status === "waiting" ? "resume" : "wait")
+  }
+
+  // The someday switch, flipped: the same on/off decision as waiting, so
+  // `engage someday` incubates it and `engage resume` brings it back.
+  function toggleSomeday() {
+    var target = root.selectedItem()
+    if (!target) return
+    var raw = target.raw || {}
+    root.act(raw.status === "someday" ? "resume" : "someday")
   }
 
   function captureFieldFocus() {
@@ -3681,6 +3698,7 @@ readonly property var primaryViews: [
               font.bold: row.modelData.kind === "header"
               font.strikeout: row.modelData.archived === true
               font.italic: row.modelData.deferred === true
+                || gtdTheme.isSomeday(row.modelData.raw)
               text: (row.modelData.kind === "header" ? "" : (row.modelData.glyph || " ") + "  ")
                 + row.modelData.title
             }
@@ -3898,6 +3916,7 @@ readonly property var primaryViews: [
                           { n: calCell.modelData.marks.orange, c: gtdTheme.orange },
                           { n: calCell.modelData.marks.blue, c: gtdTheme.blue },
                           { n: calCell.modelData.marks.purple, c: gtdTheme.purple },
+                          { n: calCell.modelData.marks.pink, c: gtdTheme.pink },
                           { n: calCell.modelData.marks.grey, c: gtdTheme.grey },
                           { n: calCell.modelData.marks.green, c: gtdTheme.green,
                             shown: root.showCompleted }
@@ -3999,6 +4018,8 @@ readonly property var primaryViews: [
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
                 font.italic: dayRow.modelData.deferred === true
+                  || gtdTheme.isSomeday(dayRow.modelData.raw)
+                  || gtdTheme.isSomeday(dayRow.modelData.raw)
                 text: (dayRow.modelData.glyph || " ") + "  " + dayRow.modelData.title
               }
 
@@ -4564,12 +4585,14 @@ readonly property var primaryViews: [
                  color: root.dim
                  font.family: root.fontFamily
                  font.pixelSize: Style.font.caption
-                  text: "Its days carry one coloured mark per task, in the "
+                   text: "Its days carry one coloured mark per task, in the "
                          + "colour that task wears in the list the day opens. "
                          + "Red is expired, purple is expired waiting, blue is "
-                         + "waiting, orange is flagged, grey is plain or not "
-                         + "yet due. Finished tasks stay off the grid unless "
-                         + "you ask for them."
+                          + "waiting, pink is someday/maybe, orange is flagged, "
+                          + "grey is plain or not "
+                          + "yet due. Only open work is coloured — a finished "
+                          + "or deleted task reads dim, and stays off the grid "
+                          + "unless you ask for the completed ones."
                  }
 
                Flow {
@@ -5182,6 +5205,21 @@ text: root.editTitle
                    onClicked: root.toggleWait()
                  }
 
+                 Toggle {
+                   id: somedayToggle
+                   width: parent.width
+                   label: "someday / maybe"
+                   description: "on = incubated, revisited at review; it reads "
+                       + "in italic pink and stays out of Next until you resume it"
+                   checked: root.editSomeday
+                   foreground: root.textColor
+                   accent: root.accent
+                   fontFamily: root.fontFamily
+                   titleSize: Style.font.caption
+                   descriptionSize: Style.font.caption
+                   onClicked: root.toggleSomeday()
+                 }
+
                  Column {
                    width: parent.width
                    spacing: Style.spacing.xxs
@@ -5655,6 +5693,15 @@ Row {
                     onClicked: root.toggleFlag()
                   }
 
+                  Button {
+                    text: "someday"
+                    bordered: true
+                    fontFamily: root.fontFamily
+                    fontSize: Style.font.caption
+                    foreground: root.textColor
+                    onClicked: root.toggleSomeday()
+                  }
+
                 }
               }
             }
@@ -5687,7 +5734,7 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.status !== "" ? root.status
-          : "← → column  ↑↓ move  tab row/view  enter pick/save  c capture  d done  a archive  f flag  w wait  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  esc close"
+          : "← → column  ↑↓ move  tab row/view  enter pick/save  c capture  d done  a archive  f flag  w wait  y someday  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  esc close"
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

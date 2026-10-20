@@ -27,6 +27,11 @@ BarWidget {
   readonly property int archived: panel ? panel.archived : 0
   readonly property int flagged: panel ? panel.flagged : 0
   readonly property int flaggedToday: panel ? panel.flaggedToday : 0
+  // The list the panel is showing: its open-row count and the colour those
+  // rows add up to, so the pill names the same number and wears the same
+  // colour as the panel header.
+  readonly property color todayTone: panel ? panel.listTone : "transparent"
+  readonly property string todayToneKey: panel ? panel.listToneKey : "plain"
 
   // Settings.
   readonly property bool compact: root.settings && root.settings.compact === true
@@ -38,10 +43,6 @@ BarWidget {
         ? root.settings.urgentInboxThreshold : 10
     return Math.max(1, n)
   }
-
-  // The theme's orange, read the same way the panel reads it, so a flagged day
-  // on the pill is the flag colour used everywhere else in OmaGTD.
-  GtdTheme { id: gtdTheme }
 
   // ---- Panel lifecycle contract (shell.summon/hide/toggle routing).
   readonly property bool opened: panel ? panel.opened === true : false
@@ -181,14 +182,15 @@ BarWidget {
   readonly property string pillText: (root.hideZeroCounts && root.countsAreZero)
     ? "GTD"
     : "GTD " + root.dueTodayLate + "/" + root.dueToday
-  // The pill's colour, in one priority: red the moment a task due today has
-  // run past its clock time; otherwise orange when a flagged task sits on
-  // today and has not expired yet; plain the rest of the time. Work left over
-  // from an earlier day stays out of it — that shows in the tooltip only, as
-  // its own count. `flagged_today` already drops today's expired flags, so it
-  // is exactly "flagged and not expired", and red outranks it.
-  readonly property bool pillRed: root.dueTodayLate > 0
-  readonly property bool pillOrange: !root.pillRed && root.flaggedToday > 0
+  // The pill's colour is the panel's: the most urgent open state among the
+  // rows the panel is showing, from the same ladder the rows walk. Only a loud
+  // state tints it — red, purple, pink, blue or orange. Grey (deferred) and a
+  // plainly-open list keep the bar's own text colour, so the pill never fades
+  // into the bar. The `n/m` numbers keep their own meaning — expired today over
+  // everything due today — which the tooltip spells out.
+  readonly property var loudTones: ["red", "purple", "pink", "blue", "orange"]
+  readonly property bool pillLit: root.loudTones.indexOf(root.todayToneKey) >= 0
+  readonly property color pillColor: root.pillLit ? root.todayTone : "transparent"
 
   // The bar slot is just the pill: the counts open the quick panel, and the
   // full view is reached from the panel itself (its ↓ / capture-and-edit) or
@@ -204,8 +206,8 @@ BarWidget {
       hasVisualContent: true
       horizontalMargin: 8.75
       verticalPadding: 8.75
-      active: root.pillRed || root.pillOrange
-      activeColor: root.pillRed ? (bar ? bar.urgent : Color.urgent) : gtdTheme.orange
+      active: root.pillLit
+      activeColor: root.pillColor
       tooltipText: {
         var t = "OmaGTD"
         t += "\nGTD " + root.dueTodayLate + "/" + root.dueToday

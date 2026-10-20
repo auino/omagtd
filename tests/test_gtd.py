@@ -492,6 +492,13 @@ class Engage(TempStore):
         resumed = core.engage(self.store, self.item["id"], "resume")
         self.assertEqual(resumed["status"], "active")
 
+    def test_someday_then_resuming(self):
+        # Someday is the same on/off decision as waiting: park it, then resume.
+        parked = core.engage(self.store, self.item["id"], "someday")
+        self.assertEqual(parked["status"], "someday")
+        resumed = core.engage(self.store, self.item["id"], "resume")
+        self.assertEqual(resumed["status"], "active")
+
     def test_defer_and_drop(self):
         deferred = core.engage(self.store, self.item["id"], "defer", when="+2w")
         self.assertEqual(deferred["defer_at"],
@@ -2923,6 +2930,20 @@ class CommandLine(TempStore):
         self.run_cli("edit", item_id, "--title", "Fix the garden gate")
         shown = self.run_cli("show", item_id)
         self.assertEqual(shown["item"]["title"], "Fix the garden gate")
+
+    def test_someday_park_verb_and_edit_flag(self):
+        # The dedicated verb parks it, the edit flag does the same, and resume
+        # brings it back — the three routes the UI and CLI both reach for.
+        item_id = self.run_cli("capture", "Learn to sail")["item"]["id"]
+        self.assertEqual(self.run_cli("someday", item_id)["item"]["status"],
+                         "someday")
+        self.assertEqual([i["title"] for i in self.run_cli("list", "someday")["items"]],
+                         ["Learn to sail"])
+        self.run_cli("engage", item_id, "resume")
+        other_id = self.run_cli("capture", "Build a treehouse")["item"]["id"]
+        self.run_cli("edit", other_id, "--someday")
+        self.assertEqual(self.run_cli("show", other_id)["item"]["status"],
+                         "someday")
 
     def test_the_trash_empties_itself(self):
         item_id = self.run_cli("capture", "Oops")["item"]["id"]

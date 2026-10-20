@@ -59,6 +59,14 @@ Panel {
   property var rows: []        // display rows, precomputed from the JSON
   property var current: null   // the row under the cursor
   property int selected: 0
+  // The open-row count and the colour those rows add up to, recomputed every
+  // time the list is rebuilt (see setRows). Plain properties rather than
+  // bindings: the tone walks the raw JSON objects, which QML cannot track
+  // through a JavaScript call, so a binding would go stale until something
+  // else happened to refresh it.
+  property int openRowCount: 0
+  property color listTone: "transparent"
+  property string listToneKey: "plain"
   // True while the capture field should own the keyboard. The panel opens with
   // the list cursor instead, so arrows move the selection; "c" or clicking the
   // capture box brings the caret into the field, and Escape drops back out.
@@ -273,11 +281,66 @@ Panel {
     while (root.selected < root.rows.length && root.rows[root.selected].header)
       root.selected++
     root.updateCurrent()
+    root.refreshSummary()
   }
 
   function updateCurrent() {
     var row = root.rows[root.selected]
     root.current = row && !row.header ? row : null
+  }
+
+  // The open tasks the panel is showing: rows that carry a real item and are
+  // not finished or deleted. This is the number the "n today" summary names,
+  // so it matches the list under it rather than a global count.
+  function countOpenRows() {
+    var n = 0
+    for (var i = 0; i < root.rows.length; i++) {
+      var row = root.rows[i]
+      if (row && !row.header && row.raw && !gtdTheme.isClosed(row.raw)) n++
+    }
+    return n
+  }
+
+  // The colour the "n today" summary wears: the most urgent open state among
+  // the rows shown, from the same tone ladder the rows themselves use.
+  // Transparent when nothing there is worth colouring, and the header falls
+  // back to dim.
+  function toneResolvers() {
+    var raws = []
+    var lates = []
+    var deferreds = []
+    for (var i = 0; i < root.rows.length; i++) {
+      var row = root.rows[i]
+      if (!row || row.header || !row.raw || gtdTheme.isClosed(row.raw)) continue
+      raws.push(row.raw)
+      lates.push(row.late === true)
+      deferreds.push(row.deferred === true)
+    }
+    return {
+      raws: raws,
+      lateOf: function(item) { return lates[raws.indexOf(item)] === true },
+      deferredOf: function(item) { return deferreds[raws.indexOf(item)] === true }
+    }
+  }
+
+  function computeListTone() {
+    var r = root.toneResolvers()
+    return gtdTheme.toneFor(r.raws, r.lateOf, r.deferredOf) || "transparent"
+  }
+
+  // The tone as a name ("red", "orange", "grey", "plain", …). The pill gates
+  // on this: only a loud state tints it, while grey (deferred) and plain keep
+  // the bar's own text colour so the pill never fades into the bar.
+  function computeListToneKey() {
+    var r = root.toneResolvers()
+    return gtdTheme.toneKeyFor(r.raws, r.lateOf, r.deferredOf)
+  }
+
+  // Recompute the summary from the list the panel is actually showing.
+  function refreshSummary() {
+    root.openRowCount = root.countOpenRows()
+    root.listTone = root.computeListTone()
+    root.listToneKey = root.computeListToneKey()
   }
 
   // ---- Processes.
@@ -652,18 +715,17 @@ Panel {
             }
             Text {
               textFormat: Text.PlainText
-              // Red when anything has expired (today's time passed, or work
-              // left over from an earlier day); orange when a task on today's
-              // list is flagged and nothing has expired; dim otherwise. Every
-              // flagged action sits in the `today` view, so the global flagged
-              // count is exactly "at least one flagged task on today".
-              color: (root.overdue > 0 || root.dueTodayLate > 0) ? root.urgent
-                   : (root.flaggedToday > 0 ? gtdTheme.orange : root.dim)
+              // The colour of the list below it: the most urgent open state
+              // among the rows the panel actually shows, from the same ladder
+              // the rows walk. Finished and deleted rows contribute nothing,
+              // so a list of only those stays dim. `n` is the number of open
+              // rows on screen, matching what the panel lists.
+              color: root.listTone === "transparent" ? root.dim : root.listTone
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
               font.letterSpacing: 1.2
-              text: (root.dueToday + " today").toUpperCase()
+              text: (root.openRowCount + " today").toUpperCase()
             }
             Text {
               textFormat: Text.PlainText
@@ -814,6 +876,7 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 font.strikeout: rowItem.modelData.archived === true
+                font.italic: gtdTheme.isSomeday(rowItem.modelData.raw)
               }
 
               MouseArea {

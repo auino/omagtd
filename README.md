@@ -19,7 +19,9 @@ infomation about this repository, see the [HUMANS.md](HUMANS.md) file.
 
 - **Bar pill** — inbox and next-action counts, with a compact glyph-only mode.
 - **Panel** — a quick overlay for what is on today: what is due, plus deferred
-  work whose window has opened. Driven entirely by the keyboard.
+  work whose window has opened. Driven entirely by the keyboard. Its "n today"
+  summary names the number of open tasks shown and wears the colour of the most
+  urgent one among them, the same ladder the rows use.
 - **Fullscreen view** — the whole five-step workflow in one window (see
   *Standalone app* below).
 - **`gtd` CLI** — every step is scriptable, so it can be bound to a hotkey.
@@ -91,6 +93,11 @@ a context still shows in the inbox — it was parked before it was organized, so
 it is still waiting on a decision. It keeps its `waiting` status, so the
 *Waiting* view shows it too; a waiting item with a home has been decided and
 stays out of the inbox.
+
+*Someday / Maybe* is a state, not a context: the same kind of on/off decision
+as waiting. Park a task with `gtd someday ID` (or `gtd edit ID --someday`),
+bring it back with `gtd engage ID resume`, and revisit it in `gtd list someday`
+at review time. It carries the `S` glyph and reads in italic pink in the app.
 
 ### Running each step from the CLI
 
@@ -321,6 +328,15 @@ The `theme` setting controls the fullscreen overlay palette. The default
 OmniFocus-inspired light or dark palettes for the overlay. These palette
 choices are local to OmaGTD and do not change Omarchy's shared theme. The bar
 pill and quick panel always follow the desktop theme.
+
+Row colours only mark **open** work. A task that is finished (done, archived)
+or thrown away (dropped, trashed) is out of play, so it wears no status colour
+— it reads dim. The one severity ladder every surface shares is
+red (expired) › purple (expired waiting) › pink (someday) › blue (waiting) ›
+orange (flagged) › grey (deferred). The panel's "n today" wears the most urgent
+colour its list contains; the bar pill tints the same way, but only for the
+loud states — grey (deferred) and a plainly-open list keep the bar's own text
+colour, so the pill never fades into the bar.
 
 `fullscreen_default_view` picks the view the fullscreen app lands on when it
 opens — `today` unless you ask for `inbox` or `calendar`. It only names the

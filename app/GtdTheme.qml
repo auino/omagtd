@@ -6,10 +6,11 @@ import qs.Commons
 // The palette and status colours the fullscreen app paints itself in.
 //
 // Two jobs live here. The status colours — red for what is late, orange for a
-// flag, blue for waiting, purple for waiting past its date, green for done,
-// and the theme's own dimmed foreground for a task whose defer date has not
-// come round — are read from the active Omarchy theme, so a flagged task is
-// the same orange as the rest of the desktop.
+// flag, blue for waiting, purple for waiting past its date, pink for the
+// incubated (someday/maybe), green for done, and the theme's own dimmed
+// foreground for a task whose defer date has not come round — are read from
+// the active Omarchy theme, so a flagged task is the same orange as the rest
+// of the desktop.
 //
 // A preset may take over the fullscreen surface's local colors. This object
 // never writes to the shell's shared Color or Style singletons.
@@ -24,14 +25,14 @@ QtObject {
     "of-light": {
       background: "#ffffff", text: "#1c1c1e", dim: "#8a8a8e", line: "#d8d8dc",
       accent: "#6e5ae0", urgent: "#d64541",
-      orange: "#e8a33d", blue: "#3e7bfa", purple: "#8e6fd8",
+      orange: "#e8a33d", blue: "#3e7bfa", purple: "#8e6fd8", pink: "#d9649a",
       green: "#5aa469", grey: "#9aa0a6",
       font: "Adwaita Sans", radius: 6
     },
     "of-dark": {
       background: "#1c1c1e", text: "#f2f2f7", dim: "#9a9aa0", line: "#3a3a3f",
       accent: "#9a86f0", urgent: "#d64541",
-      orange: "#e8a33d", blue: "#4a7cc7", purple: "#a98ce0",
+      orange: "#e8a33d", blue: "#4a7cc7", purple: "#a98ce0", pink: "#e07bb0",
       green: "#5aa469", grey: "#8a8a8e",
       font: "Adwaita Sans", radius: 6
     }
@@ -63,6 +64,7 @@ QtObject {
    property color _orange: "#eb927b"
    property color _blue: Color.accent
    property color _purple: "#ad8ee6"
+   property color _pink: "#e07bb0"
    property color _green: "#7cb87c"
    property color _grey: Qt.darker(Color.foreground, 1.7)
 
@@ -70,6 +72,7 @@ QtObject {
   readonly property color orange: root.themed ? root.p.orange : root._orange
   readonly property color blue: root.themed ? root.p.blue : root._blue
   readonly property color purple: root.themed ? root.p.purple : root._purple
+  readonly property color pink: root.themed ? root.p.pink : root._pink
   readonly property color green: root.themed ? root.p.green : root._green
   readonly property color grey: root.themed ? root.p.grey : root._grey
 
@@ -89,6 +92,7 @@ QtObject {
       else if (match[1] === "orange") _orange = match[2]
       else if (match[1] === "blue") _blue = match[2]
       else if (match[1] === "magenta") _purple = match[2]
+      else if (match[1] === "pink") _pink = match[2]
       else if (match[1] === "dark_foreground") dimmed = match[2]
       else if (match[1] === "foreground") foreground = match[2]
     }
@@ -153,6 +157,22 @@ QtObject {
     return String(item.defer_at).slice(0, 16) > nowStamp()
   }
 
+  // Incubated work reads in italic, the way a maybes list does on paper: set
+  // apart from the work you could do now. The colour is the status colour.
+  function isSomeday(item) {
+    return !!(item && item.status === "someday")
+  }
+
+  // A task that is finished (done, archived) or thrown away (dropped, trashed)
+  // wears no status colour of its own: it is out of play, so the signals no
+  // longer apply and it takes the caller's own dim colour instead.
+  function isClosed(item) {
+    if (!item) return false
+    var status = item.status || ""
+    return status === "done" || status === "archived"
+      || status === "dropped" || status === "trashed"
+  }
+
   // A task sitting on today's list because its defer window has opened, not
   // because its deadline is today: the defer date has come round (or passed)
   // while the deadline still lies ahead. It wears the same defer mark the
@@ -178,7 +198,8 @@ QtObject {
   // caller's own text colour instead.
   function colorKeyFor(item, late, deferred) {
      if (!item) return "plain"
-     if (item.status === "done" || item.status === "archived") return "green"
+     if (isClosed(item)) return "plain"
+     if (item.status === "someday") return "pink"
      var waiting = item.status === "waiting"
      if (waiting && late) return "purple"
      if (late) return "red"
@@ -194,9 +215,41 @@ QtObject {
     if (key === "red") return red
     if (key === "purple") return purple
     if (key === "blue") return blue
+    if (key === "pink") return pink
     if (key === "orange") return orange
     if (key === "green") return green
     return grey
+  }
+
+  // The severity ladder the "n today" summary walks: the most urgent open
+  // state present in a list is what the one count wears, so the summary can
+  // never disagree with the worst row under it.
+  readonly property var toneOrder: ["red", "purple", "pink", "blue", "orange", "grey"]
+
+  function toneKeyFor(items, lateOf, deferredOf) {
+    var seen = ({})
+    var list = items || []
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i]
+      if (!item || isClosed(item)) continue
+      var late = lateOf ? lateOf(item) : false
+      var deferred = deferredOf ? deferredOf(item) : undefined
+      seen[colorKeyFor(item, late, deferred)] = true
+    }
+    for (var t = 0; t < toneOrder.length; t++)
+      if (seen[toneOrder[t]]) return toneOrder[t]
+    return "plain"
+  }
+
+  function toneFor(items, lateOf, deferredOf) {
+    var key = toneKeyFor(items, lateOf, deferredOf)
+    if (key === "red") return red
+    if (key === "purple") return purple
+    if (key === "blue") return blue
+    if (key === "pink") return pink
+    if (key === "orange") return orange
+    if (key === "grey") return grey
+    return null
   }
 
   // The mark one task earns on the calendar grid: its row's colour, with the
