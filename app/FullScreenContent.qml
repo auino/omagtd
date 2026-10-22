@@ -2,12 +2,12 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Basic as ControlsBasic
-import QtQuick.Dialogs
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
+import "Ui"
 
 // GTD: the full view — the whole system, laid out to be read.
 //
@@ -362,6 +362,9 @@ readonly property var primaryViews: [
   property string editLink: ""
   property string editAttachments: ""
   property bool editHideZeroCounts: false
+  // Which caller the shared file browser is picking for: "" (closed),
+  // "attach", "import" or "import-folder".
+  property string pickTarget: ""
   // The editor is a live form: a background refresh (the poll, or another
   // command's reload) must never overwrite what the user has typed but not yet
   // saved. formSeededId remembers which item the form currently holds, so a
@@ -1337,6 +1340,13 @@ readonly property var primaryViews: [
   function setLeftMode(mode) {
     if (root.leftMode === mode) return
     root.topFocused = false
+    // If we're looking at the calendar, switching between projects and contexts
+    // is a left-sidebar navigation action — fall back to a list view so the
+    // calendar doesn't stay visible in the background.
+    if (root.view && root.view.key === "calendar") {
+      var targetKey = root.defaultView && root.defaultView !== "calendar" ? root.defaultView : "today"
+      root.pickViewByKey(targetKey)
+    }
     root.leftMode = mode
     root.column = 0
     root.settingsOpen = false
@@ -2478,6 +2488,67 @@ readonly property var primaryViews: [
     try { return decodeURIComponent(path) } catch (e) { return path }
   }
 
+  // Who the file browser is picking for. The three callers share one browser,
+  // so an accepted path means whatever "attach", "import" or "import-folder"
+  // opened it last.
+  function pickAttachment() {
+    root.pickTarget = "attach"
+    fileBrowser.title = "Attach a file"
+    fileBrowser.acceptText = "Attach"
+    fileBrowser.folderMode = false
+    fileBrowser.begin(root.attachmentFolder(), [])
+  }
+
+  function pickImportFile() {
+    root.pickTarget = "import"
+    fileBrowser.title = "Import from OmniFocus"
+    fileBrowser.acceptText = "Import"
+    fileBrowser.folderMode = false
+    fileBrowser.begin(root.importFolder(),
+      ["*.ofxml", "*.ofocusmx", "*.json", "*.csv"])
+  }
+
+  function pickImportFolder() {
+    root.pickTarget = "import-folder"
+    fileBrowser.title = "Choose an OmniFocus export folder"
+    fileBrowser.acceptText = "Import"
+    fileBrowser.folderMode = true
+    fileBrowser.begin(root.importFolder(), [])
+  }
+
+  function acceptPickedFile(path) {
+    var target = root.pickTarget
+    root.pickTarget = ""
+    fileBrowser.close()
+    if (target === "attach") {
+      root.editAttachments = path
+      root.formDirty = true
+    } else if (target === "import" || target === "import-folder") {
+      root.importPath = path
+      root.doImport()
+    }
+  }
+
+  // Where the browser starts: the folder of whatever is already in the field,
+  // else the home directory. Keeping the last choice in view saves a lot of
+  // walking when all your imports live in one place.
+  function attachmentFolder() {
+    var p = String(root.editAttachments || "").trim()
+    return p !== "" ? root.parentOf(p) : root.home
+  }
+
+  function importFolder() {
+    var p = String(root.importPath || "").trim()
+    return p !== "" ? root.parentOf(p) : root.home
+  }
+
+  function parentOf(path) {
+    var p = path.replace(/\/+$/, "")
+    if (p === "" || p === "/") return "/"
+    var slash = p.lastIndexOf("/")
+    return slash <= 0 ? "/" : p.slice(0, slash)
+  }
+
   function doImport() {
     var path = root.importPath.trim()
     if (path === "") { root.status = "give a file to import"; return }
@@ -2745,6 +2816,12 @@ readonly property var primaryViews: [
   }
 
   function pickViewByKey(key) {
+    if (key === "calendar") {
+      // Calendar is a main view, not a project/context drill-in.
+      root.projectFocus = null
+      root.contextFocus = null
+      root.topFocused = false
+    }
     for (var i = 0; i < root.views.length; i++) {
       if (root.views[i].key === key) {
         root.pickView(i + 1)
@@ -2829,43 +2906,19 @@ readonly property var primaryViews: [
     try { Quickshell.execDetached(["xdg-open", target]) } catch (e) {}
   }
 
-  // OmniFocus import dialog - browse for export files
-  FileDialog {
-    id: importDialog
-    title: "Import from OmniFocus"
-    fileMode: FileDialog.OpenFile
-    nameFilters: ["OmniFocus (*.ofxml *.ofocusmx *.json *.csv)", "All files (*)"]
-    onAccepted: {
-      var path = root.localPath(selectedFile)
-      root.importPath = path
-      root.doImport()
-    }
-  }
-
-  // An OmniFocus export is a folder (a .ofocus document), so offer a folder
-  // picker alongside the file browser above.
-  FolderDialog {
-    id: importFolderDialog
-    title: "Choose an OmniFocus export folder"
-    onAccepted: {
-      root.importPath = root.localPath(selectedFolder)
-      root.doImport()
-    }
-  }
-
-  // One attachment per task, so choosing it is the whole editor: a path to
-  // type in would only be a second way to get it wrong.
-  FileDialog {
-    id: attachDialog
-    title: "Attach a file"
-    fileMode: FileDialog.OpenFile
-    onAccepted: {
-      var path = selectedFile.toString()
-      if (path.indexOf("file://") === 0) path = path.slice(7)
-      try { path = decodeURIComponent(path) } catch (e) {}
-      root.editAttachments = path
-      root.formDirty = true
-    }
+  // The file chooser. The native FileDialog routes through the platform
+  // theme — on Wayland that is the XDG desktop portal, whose GTK/gvfs path
+  // aborts the whole shell when opened from a layer-shell surface. This
+  // browser reads directories with FolderListModel instead, so it is safe to
+  // run inside the overlay. One instance serves all three callers; whichever
+  // opened it decides what an accepted path means.
+  FileBrowser {
+    id: fileBrowser
+    anchors.fill: parent
+    z: 20000
+    onAccepted: function(p) { root.acceptPickedFile(p) }
+    onCanceled: { root.pickTarget = ""; fileBrowser.close() }
+    onOpenedChanged: if (!fileBrowser.opened) { Qt.callLater(function() { keyCatcher.forceActiveFocus() }) }
   }
 
   // Simple date picker popup (functional fallback)
@@ -3368,7 +3421,9 @@ readonly property var primaryViews: [
                 fontFamily: root.fontFamily
                 fontSize: Style.font.caption
                 foreground: root.textColor
-                onClicked: root.setLeftMode(modelData[0])
+                onClicked: {
+                  root.setLeftMode(modelData[0])
+                }
               }
             }
           }
@@ -4657,7 +4712,7 @@ readonly property var primaryViews: [
                   fontSize: Style.font.caption
                   foreground: root.textColor
                   enabled: !root.busy
-                  onClicked: importDialog.open()
+                  onClicked: root.pickImportFile()
                 }
 
                 Button {
@@ -4667,7 +4722,7 @@ readonly property var primaryViews: [
                   fontSize: Style.font.caption
                   foreground: root.textColor
                   enabled: !root.busy
-                  onClicked: importFolderDialog.open()
+                  onClicked: root.pickImportFolder()
                 }
 
                 Button {
@@ -5530,7 +5585,7 @@ Row {
                         fontSize: Style.font.caption
                         foreground: root.textColor
                         enabled: !root.busy
-                        onClicked: attachDialog.open()
+                        onClicked: root.pickAttachment()
                       }
 
                       Button {
