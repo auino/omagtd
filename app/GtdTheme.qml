@@ -223,8 +223,10 @@ QtObject {
 
   // The severity ladder the "n today" summary walks: the most urgent open
   // state present in a list is what the one count wears, so the summary can
-  // never disagree with the worst row under it.
-  readonly property var toneOrder: ["red", "purple", "pink", "blue", "orange", "grey"]
+  // never disagree with the worst row under it. Waiting sits at the bottom:
+  // blocked work never takes the colour from a flag (orange) or the neutral
+  // deferred state (grey). Plain means "nothing to shout about".
+  readonly property var toneOrder: ["red", "purple", "pink", "orange", "grey", "blue"]
 
   function toneKeyFor(items, lateOf, deferredOf) {
     var seen = ({})

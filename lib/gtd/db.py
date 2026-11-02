@@ -578,6 +578,15 @@ class Store:
                 (view,))
             if body and "date('now', 'localtime')" not in body:
                 self.db.execute(f"DROP VIEW IF EXISTS {view}")
+        # The overdue view was left unordered — sqlite returned its rows in
+        # whatever order they happened to sit in, so the fullscreen list did not
+        # read as a deadline timeline. It now asks for the newest deadline
+        # first; a database that still holds the old body is rebuilt from
+        # schema.sql on this open.
+        body = self.scalar(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'overdue'")
+        if body and "due_at DESC" not in body:
+            self.db.execute("DROP VIEW IF EXISTS overdue")
         # The Today views used to take in deferred work with no deadline, which
         # kept an old someday/maybe task on Today forever. They now require a
         # real deadline, so a body that still admits `due_at IS NULL` inside its

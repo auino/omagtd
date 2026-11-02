@@ -1,31 +1,106 @@
 #!/bin/bash
 
-# omagtd-app is a compatibility CLI name: it routes to OmaGTD's overlay in
-# the already-running Omarchy shell and never starts a Quickshell process.
+# omagtd-app opens OmaGTD's full workflow.
+#
+# There are two shapes of it, sharing the same content: a maximized window with
+# the bar visible (the default, in the window list beside the rest of your work)
+# and the in-shell fullscreen overlay (a layer-shell surface over everything,
+# what the bar pill and the hotkey use). Both are hosted by the running Omarchy
+# shell, so this command only talks to it over IPC:
+#
+#   omagtd-app                        # open the window
+#   omagtd-app view today             # open the window on a view
+#   omagtd-app open-item y8xq0pv7     # open the editor on an item
+#   omagtd-app edit-item y8xq0pv7     # land on the item in Today
+#   omagtd-app quit                   # close whichever shape is open
+#   omagtd-app overlay                # open the fullscreen overlay instead
+#   omagtd-app overlay view calendar  # ... on a view
+#   omagtd-app overlay quit           # close it
+#
+# The overlay verbs exist so the old path keeps working; the bar widget and the
+# hotkey summon the overlay directly through the shell, without this script.
+
 set -euo pipefail
 
 TARGET="com.auino.omagtd"
 
+# Hand the shell a JSON payload; the payload picks the shape and what to land
+# on. The shell does the rest inside its own process.
+summon() {
+  omarchy-shell shell summon "$TARGET" "$1" >/dev/null
+}
+
+payload() {
+  # payload <app|overlay> <action> <key> <value>
+  python3 - "$@" <<'PY'
+import json, sys
+out = {"app": True} if sys.argv[1] == "app" else {}
+out["action"] = sys.argv[2]
+out[sys.argv[3]] = sys.argv[4]
+print(json.dumps(out))
+PY
+}
+
+focus_window() {
+  command -v hyprctl >/dev/null 2>&1 || return 0
+  # Hyprland's Lua config API (what Omarchy uses now). The classic dispatcher
+  # stays as a fallback for older builds, which reject the Lua expression.
+  if hyprctl dispatch 'hl.dsp.focus({ window = "title:^(OmaGTD)$" })' >/dev/null 2>&1; then
+    return 0
+  fi
+  hyprctl dispatch focuswindow 'title:^(OmaGTD)$' >/dev/null 2>&1 || true
+}
+
+# ---- the in-shell overlay, for the old path --------------------------------
+
+if [[ ${1:-} == overlay ]]; then
+  shift
+  case "${1:-}" in
+    quit|close)
+      exec omarchy-shell shell hide "$TARGET"
+      ;;
+    toggle)
+      exec omarchy-shell shell toggle "$TARGET" '{}'
+      ;;
+    view)
+      summon "$(payload overlay view name "${2:-today}")"
+      ;;
+    open-item)
+      summon "$(payload overlay openItem id "${2:?item id required}")"
+      ;;
+    edit-item)
+      summon "$(payload overlay editItem id "${2:?item id required}")"
+      ;;
+    *)
+      summon '{}'
+      ;;
+  esac
+  exit 0
+fi
+
+# ---- the app window --------------------------------------------------------
+
 case "${1:-}" in
   view)
-    payload="$(python3 -c 'import json,sys; print(json.dumps({"action":"view","name":sys.argv[1]}))' "${2:-today}")"
-    exec omarchy-shell shell summon "$TARGET" "$payload"
+    summon "$(payload app view name "${2:-today}")"
+    focus_window
     ;;
   open-item)
-    payload="$(python3 -c 'import json,sys; print(json.dumps({"action":"openItem","id":sys.argv[1]}))' "${2:?item id required}")"
-    exec omarchy-shell shell summon "$TARGET" "$payload"
+    summon "$(payload app openItem id "${2:?item id required}")"
+    focus_window
     ;;
   edit-item)
-    payload="$(python3 -c 'import json,sys; print(json.dumps({"action":"editItem","id":sys.argv[1]}))' "${2:?item id required}")"
-    exec omarchy-shell shell summon "$TARGET" "$payload"
+    summon "$(payload app editItem id "${2:?item id required}")"
+    focus_window
     ;;
   quit|close)
     exec omarchy-shell shell hide "$TARGET"
     ;;
   toggle)
-    exec omarchy-shell shell toggle "$TARGET" '{}'
+    exec omarchy-shell shell toggle "$TARGET" '{"app":true}'
     ;;
   *)
-    exec omarchy-shell shell summon "$TARGET" '{}'
+    summon '{"app":true}'
+    focus_window
     ;;
 esac

@@ -22,8 +22,8 @@ infomation about this repository, see the [HUMANS.md](HUMANS.md) file.
   work whose window has opened. Driven entirely by the keyboard. Its "n today"
   summary names the number of open tasks shown and wears the colour of the most
   urgent one among them, the same ladder the rows use.
-- **Fullscreen view** — the whole five-step workflow in one window (see
-  *Standalone app* below).
+- **Fullscreen view** — the whole five-step workflow, either as a layer-shell
+  overlay or as a real window of its own (see *Full workflow* below).
 - **`gtd` CLI** — every step is scriptable, so it can be bound to a hotkey.
 
 ## GTD in OmaGTD
@@ -163,17 +163,48 @@ Remove it with:
 omarchy plugin remove com.auino.omagtd
 ```
 
-## Full workflow overlay
+## Full workflow
 
-The full five-step workflow is a Quattro-managed fullscreen overlay inside the
-existing Omarchy shell process. The bar widget summons it directly; no second
-Quickshell process is started. The optional `omagtd-app` command is only a
-convenience wrapper around the Omarchy shell IPC:
+The full five-step workflow is one view,
+`app/FullScreenContent.qml`, drawn in two shapes. Both live inside the running
+Omarchy shell process — no second Quickshell instance — so they see the same
+database and the same theme.
+
+**The overlay** is a layer-shell surface: it covers everything, takes the
+keyboard, and the bar pill summons it directly.
+
+**The app window** is an ordinary maximized window: the bar stays visible, it
+keeps its border, sits in the window list, and can be minimized or moved
+between workspaces like any other window. The desktop entry and
+`bin/omagtd-app` open this one; `omagtd-app overlay` opens the overlay instead.
+
+Hyprland needs one rule to maximize it (it ignores the xdg maximized state on a
+tiled window); without it the window still opens, but tiles beside its
+neighbours instead of filling the workspace:
+
+```lua
+-- ~/.config/hypr/hyprland.lua
+o.window({ class = "^org.quickshell$", title = "^OmaGTD$" }, { maximize = true })
+```
+
+From the overlay, `g` opens the same view as the window and closes the overlay.
+`SUPER + SHIFT + G` is bound to `bin/omagtd-app`, so it brings the window up
+(and focuses it if it is already open). Omarchy's default `SUPER + SHIFT + G`
+opens Signal, so the user binding has to `hl.unbind` it first:
+
+```lua
+-- ~/.config/hypr/bindings.lua
+hl.unbind("SUPER + SHIFT + G")
+o.bind("SUPER + SHIFT + G", "OmaGTD",
+  "~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app")
+```
 
 ```bash
-~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app            # open the overlay
-~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app view today # open on a view
-~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app quit       # close the overlay
+~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app              # the app window
+~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app view today   # ... on a view
+~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app quit         # close whichever is open
+~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app overlay      # the fullscreen overlay
+~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app overlay quit # close it
 ```
 
 To invoke it from the terminal, symlink the wrapper onto your PATH:
@@ -182,9 +213,9 @@ To invoke it from the terminal, symlink the wrapper onto your PATH:
 ln -s ~/.config/omarchy/plugins/com.auino.omagtd/bin/omagtd-app ~/.local/bin/omagtd-app
 ```
 
-The window is a real toplevel, not a layer-shell overlay: it opens maximized on
-the monitor it lands on, stays in the background, and closing the window quits
-the app.
+One shape is open at a time: summoning the overlay hides the window and vice
+versa. Each keeps its own place in the workflow, so switching back lands where
+you left off.
 
 ## The `gtd` CLI
 
@@ -332,11 +363,13 @@ pill and quick panel always follow the desktop theme.
 Row colours only mark **open** work. A task that is finished (done, archived)
 or thrown away (dropped, trashed) is out of play, so it wears no status colour
 — it reads dim. The one severity ladder every surface shares is
-red (expired) › purple (expired waiting) › pink (someday) › blue (waiting) ›
-orange (flagged) › grey (deferred). The panel's "n today" wears the most urgent
-colour its list contains; the bar pill tints the same way, but only for the
-loud states — grey (deferred) and a plainly-open list keep the bar's own text
-colour, so the pill never fades into the bar.
+red (expired) › purple (expired waiting) › pink (someday) › orange (flagged) ›
+grey (deferred) › blue (waiting). Waiting sits last because blocked work is not
+work pressing on you: it never takes the colour away from a flag or the neutral
+deferred state. The panel's "n today" wears the most urgent colour its list
+contains; the bar pill tints the same way, but only for the loud states — grey
+(deferred) and a plainly-open list keep the bar's own text colour, so the pill
+never fades into the bar.
 
 `fullscreen_default_view` picks the view the fullscreen app lands on when it
 opens — `today` unless you ask for `inbox` or `calendar`. It only names the
@@ -348,12 +381,15 @@ starting point; the keyboard still moves anywhere else once the app is up.
 python3 -m unittest tests.test_gtd   # from the plugin root
 ```
 
-The bar widget, quick panel, and fullscreen overlay use the `qs.Commons` /
-`qs.Ui` modules from the running Omarchy shell. The overlay loads the shared
-fullscreen content in that same shell process.
+The bar widget, quick panel, and both fullscreen shapes use the `qs.Commons` /
+`qs.Ui` modules from the running Omarchy shell. `app/Ui` holds the fullscreen
+view's vendored copy of the UI kit (with `FileBrowser.qml` on top, so attaching
+a file never reaches a native dialog); its `BorderOverlay` reads
+`BorderGeometry.js` from `app/Commons` by relative path, which is why that copy
+has to stay beside it.
 
 `GtdTheme.qml` exists twice: the root copy is shared by the bar widget and
-panel, while `app/GtdTheme.qml` supplies the fullscreen overlay's local palette
+panel, while `app/GtdTheme.qml` supplies the fullscreen view's local palette
 and extra preset colors. Keep the status colors and row glyphs aligned.
 
 ## License

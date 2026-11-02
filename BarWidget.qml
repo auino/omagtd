@@ -184,10 +184,12 @@ BarWidget {
     : "GTD " + root.dueTodayLate + "/" + root.dueToday
   // The pill's colour is the panel's: the most urgent open state among the
   // rows the panel is showing, from the same ladder the rows walk. Only a loud
-  // state tints it — red, purple, pink, blue or orange. Grey (deferred) and a
+  // state tints it — red, purple, pink, orange or blue. Grey (deferred) and a
   // plainly-open list keep the bar's own text colour, so the pill never fades
-  // into the bar. The `n/m` numbers keep their own meaning — expired today over
-  // everything due today — which the tooltip spells out.
+  // into the bar. Waiting comes last on that ladder, so blocked work cannot
+  // paint the pill while a flag or a deferred row is in the list. The `n/m`
+  // numbers keep their own meaning — expired today over everything due today —
+  // which the tooltip spells out.
   readonly property var loudTones: ["red", "purple", "pink", "blue", "orange"]
   readonly property bool pillLit: root.loudTones.indexOf(root.todayToneKey) >= 0
   readonly property color pillColor: root.pillLit ? root.todayTone : "transparent"

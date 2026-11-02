@@ -695,6 +695,17 @@ class Views(TempStore):
         self.assertNotIn("Waiting on the bank", self.titles("focus"))
         self.assertNotIn("Someday task", self.titles("focus"))
 
+    def test_overdue_reads_newest_deadline_first(self):
+        # The Overdue list is a deadline timeline: whatever slipped most
+        # recently reads above what has been sitting there longest, so the top
+        # of the list is "just went past" rather than an arbitrary row order.
+        self.capture("Slipped two days ago", due="-2d")
+        self.capture("Slipped a week ago", due="-7d")
+        self.capture("Slipped a month ago", due="-30d")
+        self.assertEqual(self.titles("overdue"),
+                         ["Late thing", "Slipped two days ago",
+                          "Slipped a week ago", "Slipped a month ago"])
+
     def test_filtering_by_project_and_context(self):
         item = self.capture("Tagged thing", project="Garden fence", tags=["home"])
         self.assertEqual(

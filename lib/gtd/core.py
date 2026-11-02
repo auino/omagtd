@@ -2114,7 +2114,11 @@ VIEW_SQL = {
     "ten": "FROM item_titles t WHERE t.id IN (SELECT id FROM focus_ten)",
     "today": "FROM item_titles t WHERE t.id IN (SELECT id FROM today)",
     "forecast": "FROM item_titles t WHERE t.id IN (SELECT id FROM forecast)",
-    "overdue": "FROM item_titles t WHERE t.id IN (SELECT id FROM overdue)",
+    # Newest deadline first: the reading is "what has just slipped" down to
+    # "what has been sitting there longest", so a deadline missed an hour ago
+    # sits above one missed last month.
+    "overdue": "FROM item_titles t WHERE t.id IN (SELECT id FROM overdue) "
+               "ORDER BY t.due_at DESC, t.priority DESC, t.title COLLATE NOCASE",
     "due_today": "FROM item_titles t WHERE t.id IN (SELECT id FROM due_today) "
                  "ORDER BY t.due_at, t.priority DESC",
     "today_open": "FROM item_titles t WHERE t.id IN (SELECT id FROM today_open) "

@@ -76,7 +76,13 @@ FocusScope {
   property bool popoutSwitchClosing: false
   // Set by the fullscreen overlay so Escape requests a shell-managed close.
   property bool fullscreenMode: false
+  // Set by the fullscreen overlay's window host. The same content backs both
+  // shapes; this only tells them apart where it matters (the overlay's
+  // "open in the window" key has nothing to do here).
+  property bool windowMode: false
   signal closeRequested()
+  // The overlay asks the host to reopen the same view as the app window.
+  signal appRequested()
 
   // Closing the fullscreen view asks first. Escape raises this; while it is up
   // Escape is inert (the user just pressed it), Space takes the highlighted
@@ -390,11 +396,19 @@ readonly property var primaryViews: [
   }
   property string dbInfo: ""
   property string dbPath: ""
-  readonly property string today: {
+  // The current day, "YYYY-MM-DD". This is a property the clock timer refreshes,
+  // not a binding: a `new Date()` expression has nothing to depend on, so a
+  // binding would hold the day the shell started for as long as the shell runs.
+  // The fullscreen surface is built once and hidden rather than destroyed, so
+  // that froze the day at login: work whose defer date then came round kept
+  // rendering as a plain task — no defer mark, no grey, no italics — until the
+  // shell was restarted.
+  function todayStamp() {
     var d = new Date()
     return d.getFullYear() + "-" + (d.getMonth() < 9 ? "0" : "") + (d.getMonth() + 1)
       + "-" + (d.getDate() < 10 ? "0" : "") + d.getDate()
   }
+  property string today: root.todayStamp()
   // "YYYY-MM-DD HH:MM", the same shape the database stores a due date in, so
   // a lexicographic compare is enough to call a task late. Read on demand: as
   // a property it would be read once, when this window was created, and every
@@ -2053,10 +2067,7 @@ readonly property var primaryViews: [
   // is what postponing a date that has not been typed yet means.
   function shiftDate(prop, field) {
     var text = String(field.text || "").trim()
-    // Read today from the clock rather than from root.today, which is a
-    // binding with nothing to change it and so holds the day this shell started.
-    var today = root.nowStamp().slice(0, 10)
-    var moved = text === "" ? root.plusDays(today, 1) : root.plusDays(text, 1)
+    var moved = text === "" ? root.plusDays(root.today, 1) : root.plusDays(text, 1)
     if (moved === null) {
       root.status = "Tab finishes that date first"
       return
@@ -3103,6 +3114,7 @@ readonly property var primaryViews: [
         else root.act("archive")
       }
       else if (t === "m" || t === "M") root.showSettings()
+      else if ((t === "g" || t === "G") && !root.windowMode) root.appRequested()
       else if (t >= "1" && t <= "9") root.pickView(parseInt(t, 10))
     }
   }
@@ -3166,6 +3178,25 @@ readonly property var primaryViews: [
     repeat: true
     triggeredOnStart: true
     onTriggered: if (root.opened) root.reload()
+  }
+
+  // Roll the day over while the shell sits idle. The surface is built once and
+  // kept alive between openings, so nothing else re-evaluates `today`; a minute
+  // is close enough to midnight and also repairs the date after a suspend. The
+  // poll timer above reloads the rows, so a defer mark that has just come due
+  // appears without waiting for the next shell restart.
+  Timer {
+    interval: 60000
+    running: true
+    repeat: true
+    onTriggered: {
+      var stamp = root.todayStamp()
+      if (stamp === root.today) return
+      root.today = stamp
+      // Rebuild the rows now so a defer window that opened at midnight shows
+      // its mark straight away rather than on the next poll.
+      if (root.opened) root.reload()
+    }
   }
 
   // Debounce the search field so a keystroke does not run `gtd search` twice.
@@ -5789,7 +5820,9 @@ Row {
         anchors.verticalCenter: parent.verticalCenter
         textFormat: Text.PlainText
         text: root.status !== "" ? root.status
-          : "← → column  ↑↓ move  tab row/view  enter pick/save  c capture  d done  a archive  f flag  w wait  y someday  i inbox  t start  p postpone  o open  z undo  u undone  x drop  s settings  esc close"
+          : "← → column  ↑↓ move  tab row/view  enter pick/save  c capture  d done  a archive  f flag  w wait  y someday  i inbox  t start  p postpone  o open  z undo  u undone  x drop  "
+            + (root.windowMode ? "" : "g window  ")
+            + "s settings  esc close"
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

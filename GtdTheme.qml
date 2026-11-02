@@ -148,12 +148,14 @@ QtObject {
   // The severity ladder the "n today" summary walks: the most urgent open
   // state present in a list is what the one count wears, so the summary can
   // never disagree with the worst row under it. Red (expired) outranks purple
-  // (expired waiting), then pink (someday), blue (waiting), orange (flagged)
-  // and grey (deferred); plain means "nothing to shout about". `lateOf` and
-  // `deferredOf` resolve those two facts per item, so a caller that decides
-  // them itself — the panel, whose Today list holds work deferred into today —
-  // gets the same answer the rows were painted with.
-  readonly property var toneOrder: ["red", "purple", "pink", "blue", "orange", "grey"]
+  // (expired waiting), then pink (someday), orange (flagged), grey (deferred)
+  // and last of all blue (waiting): blocked work is not work pressing on you,
+  // so it never takes the colour away from a flag or the neutral state. Plain
+  // means "nothing to shout about". `lateOf` and `deferredOf` resolve those two
+  // facts per item, so a caller that decides them itself — the panel, whose
+  // Today list holds work deferred into today — gets the same answer the rows
+  // were painted with.
+  readonly property var toneOrder: ["red", "purple", "pink", "orange", "grey", "blue"]
 
   function toneKeyFor(items, lateOf, deferredOf) {
     var seen = ({})

@@ -253,12 +253,14 @@ ORDER BY priority DESC, COALESCE(due_at, '9999') ASC, defer_at ASC, created_at A
 -- Past the deadline and not finished. A hard GTD signal. "Past" is a due date
 -- before today: work left over from an earlier day. Something due later today
 -- whose time has slipped is still today's, and shows red in the Today list.
+-- Newest deadline first, so what has just slipped reads above what has been
+-- sitting there longest.
 CREATE VIEW IF NOT EXISTS overdue AS
 SELECT * FROM open_items
 WHERE kind = 'action'
   AND due_at IS NOT NULL
   AND substr(due_at, 1, 10) < date('now', 'localtime')
-ORDER BY due_at;
+ORDER BY due_at DESC, priority DESC, title COLLATE NOCASE;
 
 -- Due today, by calendar day whatever the time: the panel's Today list.
 CREATE VIEW IF NOT EXISTS due_today AS
