@@ -714,6 +714,7 @@ def _import_rows(store, records, result: dict, source: str,
     attachment_jobs: list[tuple[str, dict]] = []
     extra_tag = str(extra_tag or "").strip()
 
+    parsed: list[dict] = []
     for raw in records:
         row = {str(k).lower(): v for k, v in dict(raw).items() if k}
         fields = _row_to_fields(row)
@@ -726,7 +727,17 @@ def _import_rows(store, records, result: dict, source: str,
             # already carried. Containers do not take contexts, so this is only
             # for the actions.
             fields["tags"] = list(fields["tags"]) + [extra_tag]
+        parsed.append(fields)
 
+    # Containers first. An action may name a project that also appears later
+    # in the export; creating the action first would create that project at
+    # the top level, and the real (nested) project would then be a second
+    # container with the same name. That was harmless when names were global,
+    # but two branches may now each have an "Amministrazione".
+    ordered = ([f for f in parsed if f["kind"] in ("project", "area")]
+               + [f for f in parsed if f["kind"] not in ("project", "area")])
+
+    for fields in ordered:
         if fields["kind"] in ("project", "area"):
             nested = fields["kind"] == "project"
             node = ensure_container(

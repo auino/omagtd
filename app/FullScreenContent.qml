@@ -156,6 +156,7 @@ FocusScope {
   onOpenedChanged: {
     if (!root.opened) return
     gtdTheme.refresh()
+    root.refreshRepeatPreview()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
@@ -364,6 +365,14 @@ readonly property var primaryViews: [
   property string editDefer: ""
   property string editDuration: ""
   property string editRepeat: ""
+  // The next defer and due the current repeat rule would produce, as the
+  // backend computes them (`gtd repeat-preview`). They follow the rule, the
+  // dates and the clocks as they are typed, and the real completion uses the
+  // same helper. Empty while the input is not a usable rule or date.
+  property string editNextDefer: ""
+  property string editNextDue: ""
+  property string editNextError: ""
+  property string repeatPreviewWanted: ""
   property string editNotes: ""
   property string editLink: ""
   property string editAttachments: ""
@@ -623,6 +632,48 @@ readonly property var primaryViews: [
         root[root.completeProp] = done
         if (root.formSeededId !== "" && String(root.completeProp).indexOf("edit") === 0)
           root.formDirty = true
+      }
+    }
+  }
+
+  // The repeat preview asks the backend, so what the editor shows and what a
+  // real completion does can never drift apart. Typing restarts the timer, so
+  // one request is made when the input settles, not one per keystroke.
+  Timer {
+    id: repeatPreviewTimer
+    interval: 200
+    repeat: false
+    onTriggered: root.loadRepeatPreview()
+  }
+
+  Process {
+    id: repeatPreviewProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var out = String(this.text).trim()
+        // A reply for input that has since changed is stale: drop it.
+        if (root.repeatPreviewWanted !== root.repeatPreviewKey()) return
+        if (out === "") {
+          root.editNextDefer = ""
+          root.editNextDue = ""
+          root.editNextError = ""
+          return
+        }
+        try {
+          var d = JSON.parse(out)
+          if (!d || !d.ok || !d.next) {
+            root.editNextDefer = ""
+            root.editNextDue = ""
+            root.editNextError = d && d.error ? String(d.error) : ""
+            return
+          }
+          root.editNextError = ""
+          root.editNextDefer = d.next.defer_at || ""
+          root.editNextDue = d.next.due_at || ""
+        } catch (e) {
+          root.editNextDefer = ""
+          root.editNextDue = ""
+        }
       }
     }
   }
@@ -1510,6 +1561,58 @@ readonly property var primaryViews: [
     { value: "", label: "never" }
   ]
 
+  // The preview is only worth showing while the editor holds a repeat rule.
+  // The three inputs make the request key, so a reply that arrives after the
+  // user typed again is dropped instead of overwriting the newer preview.
+  function repeatPreviewKey() {
+    return root.editRepeat + "\n" + root.editDefer + "\n" + root.editDue
+  }
+
+  function refreshRepeatPreview() {
+    root.editNextError = ""
+    if (!root.opened || root.editRepeat.trim() === "") {
+      repeatPreviewTimer.stop()
+      root.editNextDefer = ""
+      root.editNextDue = ""
+      return
+    }
+    repeatPreviewTimer.restart()
+  }
+
+  function loadRepeatPreview() {
+    if (!root.opened) return
+    var rule = root.editRepeat.trim()
+    if (rule === "") return
+    root.repeatPreviewWanted = root.repeatPreviewKey()
+    exec(repeatPreviewProc, [root.cli, "repeat-preview",
+                             "--repeat", rule,
+                             "--defer", root.editDefer.trim(),
+                             "--due", root.editDue.trim(),
+                             "--json"])
+  }
+
+  // "next: defer 2026-11-10 09:00 · due 2026-11-11 18:00", matching the
+  // stamps the two fields above hold. An unreadable rule or date says so in
+  // the same line rather than leaving a stale result on screen.
+  readonly property string repeatPreviewText: {
+    if (root.editRepeat.trim() === "") return ""
+    if (root.editNextError !== "") return "next: " + root.editNextError
+    if (root.editNextDefer === "" && root.editNextDue === "") return "next: —"
+    var bits = []
+    if (root.editNextDefer !== "")
+      bits.push("defer " + root.stamp16(root.editNextDefer))
+    if (root.editNextDue !== "")
+      bits.push("due " + root.stamp16(root.editNextDue))
+    return "next: " + bits.join("  ·  ")
+  }
+
+  // Recompute whenever the rule, either date, or the window clock changes.
+  // Loading an item re-seeds all three, which is exactly when a fresh preview
+  // is wanted.
+  onEditRepeatChanged: root.refreshRepeatPreview()
+  onEditDeferChanged: root.refreshRepeatPreview()
+  onEditDueChanged: root.refreshRepeatPreview()
+
   // Every task row uses the same layout: decorator and title at the left,
   // deadline at the right. Defer dates and completion stamps are not deadlines.
   function itemMeta(item) {
@@ -1573,8 +1676,7 @@ readonly property var primaryViews: [
       if (entry.kind === "area") {
         var area = entry.area
         out.push({ kind: "area", depth: 0, id: area.id || "",
-                   title: area.title,
-                   meta: (area.projects || []).length + " projects", raw: area })
+                   title: area.title, raw: area })
         var projects = (area.projects || []).slice()
         projects.sort(root.byTitle)
         for (var p2 = 0; p2 < projects.length; p2++)
@@ -2279,7 +2381,9 @@ readonly property var primaryViews: [
          }
      var id = root.dragId(drop)
      if (!id) return
-     root.run(["edit", id, "--project", String(row.title)],
+     // The row carries the exact project id. A bare title is ambiguous now
+     // that two branches can each hold a project called "Amministrazione".
+     root.run(["edit", id, "--project", String(row.id)],
                "moved to " + row.title)
        }
 
@@ -5514,11 +5618,23 @@ text: root.editTitle
                      width: parent.width
                      textFormat: Text.PlainText
                      wrapMode: Text.WordWrap
+                     visible: root.editRepeat.trim() !== ""
                      color: root.dim
                      font.family: root.fontFamily
                      font.pixelSize: Style.font.caption
-                     text: "repeatable: finishing it brings the next one back; "
-                         + "with a defer date and a deadline it walks both forward"
+                     text: root.repeatPreviewText
+                   }
+
+                   Text {
+                     width: parent.width
+                     textFormat: Text.PlainText
+                     wrapMode: Text.WordWrap
+                     color: root.dim
+                     font.family: root.fontFamily
+                     font.pixelSize: Style.font.caption
+                     text: "repeatable: finishing it brings the next one back, "
+                         + "moving the defer date and the deadline together; "
+                         + "add 'after schedule' to keep them on their old days"
                    }
                  }
 

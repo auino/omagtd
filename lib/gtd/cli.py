@@ -140,6 +140,8 @@ def cmd_capture(args, out: Out, store: Store) -> dict:
         priority=args.priority, defer=args.defer, due=args.due,
         duration=getattr(args, "duration", None),
         repeat=args.repeat, review=args.review,
+        waiting=getattr(args, "waiting", False),
+        somedaymaybe=getattr(args, "somedaymaybe", False),
         url=getattr(args, "link", None), attach=getattr(args, "attach", None) or (),
         notes=args.notes or "", to_inbox=args.inbox)
     if out.json_mode:
@@ -315,7 +317,9 @@ def cmd_organize(args, out: Out, store: Store) -> dict:
         url=getattr(args, "link", None), clear_url=getattr(args, "unlink", False),
         attach=getattr(args, "attach", None) or (),
         unattach=getattr(args, "unattach", None) or (),
-        onhold=args.onhold, someday=getattr(args, "someday", False))
+        onhold=args.onhold, someday=getattr(args, "someday", False),
+        waiting=getattr(args, "waiting", False),
+        somedaymaybe=getattr(args, "somedaymaybe", False))
     if out.json_mode:
         return {"ok": True, "item": item}
     out.line(f"{out.green('organized')}  {item['title']}")
@@ -1273,6 +1277,28 @@ def cmd_quick(args, out: Out, store: Store) -> dict:
     return {"ok": True, **parsed}
 
 
+def cmd_repeat_preview(args, out: Out, store: Store) -> dict:
+    """What the next instance's defer and due dates would be, without saving.
+
+    The editor calls this as the repeat field changes, so the preview it shows
+    is produced by exactly the rule a real completion will use.
+    """
+    item = {
+        "defer_at": core._field(args.defer, defer=True),
+        "due_at": core._field(args.due),
+    }
+    nxt = core.next_repeat_dates(item, repeat=args.repeat, after=args.when)
+    if out.json_mode:
+        return {"ok": True, "next": nxt}
+    bits = []
+    if nxt["defer_at"]:
+        bits.append("defer " + dates.human(nxt["defer_at"]))
+    if nxt["due_at"]:
+        bits.append("due " + dates.human(nxt["due_at"]))
+    out.line(out.dim("next: ") + (" · ".join(bits) if bits else "nothing to repeat"))
+    return {"ok": True, "next": nxt}
+
+
 # ---------------------------------------------------------------- parser
 
 
@@ -1351,6 +1377,12 @@ def build_parser() -> argparse.ArgumentParser:
         node.add_argument("--duration", help="estimated effort: 30m, 1h, 1h30m")
         node.add_argument("--priority", "-p", type=int, choices=(0, 1),
                           help="1 flags it, 0 clears it")
+        node.add_argument("--flag", action="store_const", dest="priority", const=1,
+                          help="flag it (the same as --priority 1)")
+        node.add_argument("--waiting", action="store_true",
+                          help="park it as waiting for someone else")
+        node.add_argument("--somedaymaybe", action="store_true",
+                          help="incubate it as someday/maybe")
         if with_notes:
             node.add_argument("--notes", "-n", help="replace the note")
         node.add_argument("--link", help="a URL or file path the item points at")
@@ -1771,6 +1803,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     node = add("quick", cmd_quick, "parse a quick-entry line without saving")
     node.add_argument("text")
+
+    node = add("repeat-preview", cmd_repeat_preview,
+               "preview the next defer and due dates of a repeat rule")
+    node.add_argument("--defer", help="the action's defer date")
+    node.add_argument("--due", help="the action's deadline")
+    node.add_argument("--repeat", help="repeat rule, e.g. 'every week'")
+    node.add_argument("--when", help="when the action is completed (default: now)")
 
     return parser
 

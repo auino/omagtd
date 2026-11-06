@@ -574,6 +574,73 @@ class Postpone(TempStore):
         self.assertEqual([row[0] for row in log][-1], "postpone")
 
 
+class RepeatDates(TempStore):
+    """A repeat rule moves the whole window, not one date of it."""
+
+    def test_complete_rule_moves_both_dates_and_keeps_the_window(self):
+        item = self.capture("Water the plants", defer="2026-05-01 09:00",
+                            due="2026-05-02 18:00", repeat="every week")
+        done = core.engage(self.store, item["id"], "done", when="2026-05-03 15:00")
+        self.assertEqual(done["next"]["defer_at"], "2026-05-10 09:00")
+        self.assertEqual(done["next"]["due_at"], "2026-05-11 18:00")
+        self.assertLess(done["next"]["defer_at"], done["next"]["due_at"])
+
+    def test_a_late_completion_still_puts_the_deadline_after_the_defer(self):
+        # The old rule walked the deadline on its own grid, which could land it
+        # before the freshly opened defer date.
+        item = self.capture("Water the plants", defer="2026-04-01 09:00",
+                            due="2026-04-02 18:00", repeat="every week")
+        done = core.engage(self.store, item["id"], "done", when="2026-05-03 15:00")
+        self.assertEqual(done["next"]["defer_at"], "2026-05-10 09:00")
+        self.assertEqual(done["next"]["due_at"], "2026-05-11 18:00")
+        self.assertLess(done["next"]["defer_at"], done["next"]["due_at"])
+
+    def test_schedule_rule_keeps_both_dates_on_their_old_days(self):
+        item = self.capture("Water the plants", defer="2026-05-01 09:00",
+                            due="2026-05-02 18:00",
+                            repeat="every week after schedule")
+        done = core.engage(self.store, item["id"], "done", when="2026-05-03 15:00")
+        self.assertEqual(done["next"]["defer_at"], "2026-05-08 09:00")
+        self.assertEqual(done["next"]["due_at"], "2026-05-09 18:00")
+
+    def test_schedule_rule_skips_every_missed_window(self):
+        item = self.capture("Water the plants", defer="2026-04-03 09:00",
+                            due="2026-04-04 18:00",
+                            repeat="every week after schedule")
+        done = core.engage(self.store, item["id"], "done", when="2026-05-03 15:00")
+        self.assertEqual(done["next"]["defer_at"], "2026-05-08 09:00")
+        self.assertEqual(done["next"]["due_at"], "2026-05-09 18:00")
+
+    def test_one_date_alone_still_moves_one_interval(self):
+        due_only = self.capture("Pay the rent", due="2026-05-02 18:00",
+                                repeat="every month")
+        done = core.engage(self.store, due_only["id"], "done",
+                           when="2026-05-03 15:00")
+        self.assertIsNone(done["next"]["defer_at"])
+        self.assertEqual(done["next"]["due_at"], "2026-06-03 18:00")
+
+        defer_only = self.capture("Change the filter", defer="2026-05-01 09:00",
+                                  repeat="every 2 weeks")
+        done = core.engage(self.store, defer_only["id"], "done",
+                           when="2026-05-03 15:00")
+        self.assertEqual(done["next"]["defer_at"], "2026-05-17 09:00")
+        self.assertIsNone(done["next"]["due_at"])
+
+    def test_preview_matches_the_real_respawn(self):
+        item = self.capture("Water the plants", defer="2026-05-01 09:00",
+                            due="2026-05-02 18:00", repeat="every 2 weeks")
+        preview = core.next_repeat_dates(item, after="2026-05-03 15:00")
+        done = core.engage(self.store, item["id"], "done", when="2026-05-03 15:00")
+        self.assertEqual(preview["defer_at"], done["next"]["defer_at"])
+        self.assertEqual(preview["due_at"], done["next"]["due_at"])
+
+    def test_preview_without_a_rule_has_no_next_dates(self):
+        item = self.capture("Water the plants", defer="2026-05-01 09:00",
+                            due="2026-05-02 18:00")
+        self.assertEqual(core.next_repeat_dates(item),
+                         {"defer_at": None, "due_at": None})
+
+
 class Link(TempStore):
     def test_item_url_is_the_link(self):
         item = self.capture("Read the manual", url="https://example.com/docs")
@@ -2447,6 +2514,35 @@ class Tree(TempStore):
         self.assertEqual([a["title"] for a in nested[0]["actions"]], ["Buy labels"])
         self.assertEqual(core.get(self.store, parent["id"])["parent_title"], "Home")
 
+    def test_projects_with_the_same_name_live_in_their_own_branch(self):
+        core.ensure_container(self.store, "Nuvola")
+        core.ensure_container(self.store, "Montagna")
+        first = core.ensure_container(self.store, "Amministrazione",
+                                      parent="Nuvola")
+        second = core.ensure_container(self.store, "Amministrazione",
+                                       parent="Montagna")
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(core.get(self.store, first["id"])["parent_title"], "Nuvola")
+        self.assertEqual(core.get(self.store, second["id"])["parent_title"], "Montagna")
+        # Asking for one branch again reuses that branch's project, not the
+        # other one and not a third copy.
+        again = core.ensure_container(self.store, "amministrazione",
+                                      parent="Nuvola")
+        self.assertEqual(again["id"], first["id"])
+        self.assertEqual(core.get(self.store, second["id"])["parent_title"],
+                         "Montagna")
+
+    def test_angle_paths_keep_same_named_projects_apart(self):
+        first = core.ensure_container(self.store, "Nuvola>Amministrazione")
+        second = core.ensure_container(self.store, "Montagna>Amministrazione")
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(core.get(self.store, first["id"])["parent_title"], "Nuvola")
+        self.assertEqual(core.get(self.store, second["id"])["parent_title"], "Montagna")
+        again = core.ensure_container(self.store, "Nuvola>Amministrazione")
+        self.assertEqual(again["id"], first["id"])
+
     def test_angle_path_creates_nested_projects(self):
         core.ensure_container(self.store, "Home", "area")
         leaf = core.ensure_container(self.store, "Move house>Kitchen>Labels",
@@ -2474,11 +2570,10 @@ class Tree(TempStore):
         self.assertEqual([p["title"] for p in kitchen["projects"]], ["Labels"])
 
     def test_a_project_cannot_move_under_its_own_child(self):
-        core.ensure_container(self.store, "Move house")
+        parent = core.ensure_container(self.store, "Move house")
         core.ensure_container(self.store, "Kitchen", parent="Move house")
         with self.assertRaises(core.GtdError):
-            core.ensure_container(self.store, "Move house", parent="Kitchen")
-        parent = core.ensure_container(self.store, "Move house")
+            core.ensure_container(self.store, parent["id"], parent="Kitchen")
         with self.assertRaises(core.GtdError):
             core.organize(self.store, parent["id"], project="Kitchen")
 
@@ -2956,6 +3051,39 @@ class CommandLine(TempStore):
         self.assertEqual(self.run_cli("show", other_id)["item"]["status"],
                          "someday")
 
+    def test_flag_argument_flags_on_capture_and_edit(self):
+        captured = self.run_cli("capture", "Pay the rent", "--flag")["item"]
+        self.assertEqual(captured["priority"], 1)
+        other_id = self.run_cli("capture", "Call the plumber")["item"]["id"]
+        edited = self.run_cli("edit", other_id, "--flag")["item"]
+        self.assertEqual(edited["priority"], 1)
+        self.assertEqual({i["title"] for i in self.run_cli("list", "flagged")["items"]},
+                         {"Pay the rent", "Call the plumber"})
+
+    def test_waiting_argument_parks_on_capture_and_edit(self):
+        captured = self.run_cli("capture", "Await the invoice", "--waiting")["item"]
+        self.assertEqual(captured["status"], "waiting")
+        other_id = self.run_cli("capture", "Wait on the bank")["item"]["id"]
+        edited = self.run_cli("edit", other_id, "--waiting")["item"]
+        self.assertEqual(edited["status"], "waiting")
+        self.assertEqual({i["title"] for i in self.run_cli("list", "waiting")["items"]},
+                         {"Await the invoice", "Wait on the bank"})
+
+    def test_somedaymaybe_argument_parks_on_capture_and_edit(self):
+        captured = self.run_cli("capture", "Learn to sail", "--somedaymaybe")["item"]
+        self.assertEqual(captured["status"], "someday")
+        other_id = self.run_cli("capture", "Build a treehouse")["item"]["id"]
+        edited = self.run_cli("edit", other_id, "--somedaymaybe")["item"]
+        self.assertEqual(edited["status"], "someday")
+        self.assertEqual({i["title"] for i in self.run_cli("list", "someday")["items"]},
+                         {"Learn to sail", "Build a treehouse"})
+
+    def test_waiting_and_somedaymaybe_together_are_refused(self):
+        item_id = self.run_cli("capture", "Park this twice")["item"]["id"]
+        proc = self.run_cli_result("edit", item_id, "--waiting", "--somedaymaybe")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("choose one", json.loads(proc.stdout)["error"])
+
     def test_the_trash_empties_itself(self):
         item_id = self.run_cli("capture", "Oops")["item"]["id"]
         self.run_cli("trash", item_id)
@@ -3080,6 +3208,29 @@ class CommandLine(TempStore):
             [a["title"] for a in areas["Home"]["projects"][0]["actions"]],
             ["Order tiles"])
         self.assertEqual(data["loose"], [])
+
+    def test_project_add_allows_the_same_name_in_another_branch(self):
+        nuvola = self.run_cli("project", "add", "Nuvola")["item"]["id"]
+        montagna = self.run_cli("project", "add", "Montagna")["item"]["id"]
+        first = self.run_cli("project", "add", "Amministrazione",
+                             "--project", nuvola)["item"]
+        second = self.run_cli("project", "add", "Amministrazione",
+                              "--project", montagna)["item"]
+
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(self.run_cli("show", first["id"])["item"]["parent_id"],
+                         nuvola)
+        self.assertEqual(self.run_cli("show", second["id"])["item"]["parent_id"],
+                         montagna)
+
+        # Quick entry resolves the full path to the exact branch. A bare name
+        # is deliberately left in the title rather than guessed.
+        filed = self.run_cli(
+            "capture", "Pay the fee /Montagna>Amministrazione/")["item"]
+        self.assertEqual(filed["parent_id"], second["id"])
+        ambiguous = self.run_cli("capture", "Pay /Amministrazione/")["item"]
+        self.assertIsNone(ambiguous["parent_id"])
+        self.assertIn("/Amministrazione/", ambiguous["title"])
 
     def test_export_zip_holds_json_and_a_database(self):
         import zipfile
@@ -3212,6 +3363,20 @@ class CommandLine(TempStore):
         self.assertFalse(data["ok"])
         self.assertIn("no link", data["error"].lower())
         self.assertEqual(data.get("reason"), "no-link")
+
+    def test_repeat_preview_uses_the_completion_rule(self):
+        data = self.run_cli("repeat-preview",
+                            "--defer", "2026-05-01 09:00",
+                            "--due", "2026-05-02 18:00",
+                            "--repeat", "every week",
+                            "--when", "2026-05-03 15:00")
+        self.assertEqual(data["next"]["defer_at"], "2026-05-10 09:00")
+        self.assertEqual(data["next"]["due_at"], "2026-05-11 18:00")
+
+    def test_repeat_preview_rejects_an_unreadable_rule(self):
+        proc = self.run_cli_result("repeat-preview", "--repeat", "sometimes")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("cannot read repeat rule", proc.stdout)
 
     def test_list_pages_with_offset(self):
         ids = [self.run_cli("capture", f"Task {n}")["item"]["id"]

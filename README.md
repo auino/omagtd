@@ -64,9 +64,12 @@ is waiting on.
 
 **Step 3 — Organize.** Projects and areas are containers; contexts (`#tag`)
 are the conditions a task can be done in, and both nest with `>`
-(`Personal>Errands`, `#home>kitchen`). `gtd edit` sets them one at a time,
-`gtd project`/`gtd tag` manage the containers themselves, and the fullscreen
-view files a task by dragging it onto a project, a context or a calendar day.
+(`Personal>Errands`, `#home>kitchen`). A project name only has to be unique
+inside its parent, so `Nuvola>Amministrazione` and `Montagna>Amministrazione`
+can coexist; use the full path when a bare name would be ambiguous. `gtd edit`
+sets them one at a time, `gtd project`/`gtd tag` manage the containers
+themselves, and the fullscreen view files a task by dragging it onto a project,
+a context or a calendar day.
 
 **Step 4 — Reflect.** `gtd review daily` is "what is true right now" — the
 inbox, today, overdue and waiting. `gtd review weekly` is the Weekly Review as
@@ -125,6 +128,10 @@ gtd today
 gtd flag 7f3a2c                             # these short verbs are `gtd engage ID …`
 gtd done 7f3a2c
 ```
+
+`gtd edit ID --flag` flags an item, `--waiting` parks it as waiting for someone
+else, and `--somedaymaybe` incubates it as someday/maybe. The same three flags
+work on `gtd capture`.
 
 `actionable` and `defer` require `--project`, `--area` or `--tag`; the other
 outcomes do not. A capture that already names a context or a date skips the
@@ -217,6 +224,20 @@ One shape is open at a time: summoning the overlay hides the window and vice
 versa. Each keeps its own place in the workflow, so switching back lands where
 you left off.
 
+### Repeating actions
+
+A repeat rule (`~every week` on capture, or the repeat field in the editor)
+brings the action back when it is completed. The rule moves the whole window:
+with both a defer date and a deadline, both dates advance by the interval and
+keep the days between them, so the next deadline never lands before the day it
+opens. The default counts from completion; add `after schedule` to keep the
+dates on their original calendar days and skip any occurrences already missed.
+
+While the editor holds a repeat rule it shows the resulting next defer and next
+due dates, refreshed as the rule or either date changes. That preview comes
+from the same computation a real completion uses (`gtd repeat-preview`), so
+what the form promises is what the new task gets.
+
 ## The `gtd` CLI
 
 Everything the UI does is available on the command line. The plugin ships a
@@ -235,6 +256,7 @@ python3 ~/.config/omarchy/plugins/com.auino.omagtd/lib/gtd/cli.py --help
 Common verbs: `capture` (inbox), `clarify`/`triage`, `edit`, `defer`,
 `postpone`/`roll`, `open` (open an item's link), `today`, `focus`, `engage`,
 `review`, `tag`/`context`, `tree`, `calendar`/`cal`, `agenda`, `settings`,
+`repeat-preview` (the next defer and due a rule would produce),
 `import`, `import-lines`, `export`, `export-day`, `db`.
 
 An OmniFocus `import` reads any of its exports — a `.ofocus` document (the

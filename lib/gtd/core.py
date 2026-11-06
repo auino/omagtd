@@ -252,12 +252,30 @@ def container_path(store: Store, item: dict) -> str:
 
 
 def container_names(store: Store) -> dict[str, str]:
-    """Map container name -> kind, so quick entry's `/Name/` can resolve."""
-    return {
-        row["title"].lower(): row["kind"]
-        for row in store.query(
-            "SELECT title, kind FROM items WHERE kind IN ('project', 'area')")
-    }
+    """Map container name or full path -> kind, for quick entry's `/Name/`.
+
+    A bare name is still enough while it is unique. Once two branches carry
+    the same project title, only the full path (`/Montagna>Amministrazione/`)
+    is offered: silently resolving the bare name would file the task under
+    whichever branch happened to answer first.
+    """
+    rows = [as_dict(row) for row in store.query(
+        "SELECT id, title, kind, parent_id FROM items "
+        "WHERE kind IN ('project', 'area')")]
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = row["title"].lower()
+        counts[key] = counts.get(key, 0) + 1
+
+    names: dict[str, str] = {}
+    for row in rows:
+        title = row["title"]
+        parent = container_path(store, row)
+        path = f"{parent}>{title}" if parent else title
+        names[path.lower()] = row["kind"]
+        if counts[title.lower()] == 1:
+            names[title.lower()] = row["kind"]
+    return names
 
 
 # ------------------------------------------------------ name completion
@@ -633,10 +651,22 @@ def remove_item_attachments(store: Store, ref: str) -> int:
 # ------------------------------------------------------------- containers
 
 
-def lookup_container(store: Store, name: str, kind: str) -> dict | None:
-    row = store.one(
-        "SELECT * FROM items WHERE kind = ? AND title = ? COLLATE NOCASE "
-        "AND status <> 'trashed'", (kind, str(name).strip()))
+def lookup_container(store: Store, name: str, kind: str, *,
+                     parent_id: str | None = None) -> dict | None:
+    """Find a container by name, optionally inside one exact parent.
+
+    Project names are unique only within their parent: two branches may each
+    hold an "Amministrazione". Callers that know where the project belongs pass
+    the parent id, and callers resolving a bare name omit it to keep the old
+    whole-database lookup.
+    """
+    sql = ("SELECT * FROM items WHERE kind = ? AND title = ? COLLATE NOCASE "
+           "AND status <> 'trashed'")
+    params = [kind, str(name).strip()]
+    if parent_id is not None:
+        sql += " AND parent_id = ?"
+        params.append(parent_id)
+    row = store.one(sql, tuple(params))
     return as_dict(row)
 
 
@@ -675,6 +705,10 @@ def ensure_container(store: Store, name: str, kind: str = PROJECT,
                      *, review: str = "never", area=None, parent=None) -> dict:
     """Find a project or area by name, creating it if it does not exist.
 
+    With a parent or area, the name is matched only inside that holder: the
+    "Amministrazione" under Nuvola and the one under Montagna are two
+    projects, not one project moving back and forth.
+
     An item id is accepted as well: the UI works in ids, and `edit --project
     2a4j6xze` should file the item under that project rather than invent a new
     project literally called "2a4j6xze".
@@ -697,9 +731,16 @@ def ensure_container(store: Store, name: str, kind: str = PROJECT,
             return _ensure_path(store, parts, review=review, area=area)
         clean = parts[0]
 
-    row = store.one(
-        "SELECT * FROM items WHERE kind = ? AND title = ? COLLATE NOCASE "
-        "AND status <> 'trashed'", (kind, clean))
+    # Resolve the parent first: a name is unique only inside one branch, so
+    # looking it up globally is what used to drag the "Amministrazione" from
+    # Nuvola into Montagna. With a holder, lookup is scoped to that branch.
+    holder = None
+    if kind == PROJECT and (parent or area):
+        holder = (ensure_container(store, parent, PROJECT) if parent
+                  else ensure_container(store, area, AREA))
+
+    row = lookup_container(store, clean, kind,
+                           parent_id=holder["id"] if holder else None)
     if row is None:
         # The UI works in ids, so one is accepted in place of a name.
         row = store.one(
@@ -717,9 +758,7 @@ def ensure_container(store: Store, name: str, kind: str = PROJECT,
         store.log(item_id, "create", f"{kind}: {clean}")
         row = store.one("SELECT * FROM items WHERE id = ?", (item_id,))
     node = as_dict(row)
-    if kind == PROJECT and (parent or area):
-        holder = (ensure_container(store, parent, PROJECT) if parent
-                  else ensure_container(store, area, AREA))
+    if holder is not None:
         if holder["id"] == node["id"]:
             raise GtdError(f"a {kind} cannot contain itself")
         if node.get("parent_id") != holder["id"]:
@@ -926,7 +965,8 @@ def normalize_inbox(store: Store, item_id: str) -> None:
 
 def capture(store: Store, text: str | None = None, *, title=None, notes: str = "",
             project=None, area=None, tags=(), priority=None, defer=None, due=None,
-            duration=None, repeat=None, review=None,
+            duration=None, repeat=None, review=None, waiting=False,
+            somedaymaybe=False,
             url=None, attach=(), to_inbox: bool = False, parse_text: bool = True) -> dict:
     """Put something into the system, unthought-through.
 
@@ -956,7 +996,13 @@ def capture(store: Store, text: str | None = None, *, title=None, notes: str = "
 
     parent = None if to_inbox else resolve_parent(store, project, area)
 
-    if parent is not None:
+    if waiting and somedaymaybe:
+        raise GtdError("choose one of --waiting or --somedaymaybe")
+    if waiting:
+        status = "waiting"
+    elif somedaymaybe:
+        status = "someday"
+    elif parent is not None:
         status = "active"
     else:
         status = "inbox"
@@ -1080,7 +1126,8 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
              priority=None, notes=None, url=None, clear_url=False,
              attach=(), unattach=(),
              review=None, repeat=None, clear_repeat=False,
-             inbox=False, onhold=None, someday=None, rank=None, title=None) -> dict:
+             inbox=False, onhold=None, someday=None, waiting=False,
+             somedaymaybe=False, rank=None, title=None) -> dict:
     """Give an item its home, context, timing and flags."""
     item = find(store, ref)
     fields: dict = {}
@@ -1091,9 +1138,16 @@ def organize(store: Store, ref: str, *, project=None, area=None, tags=None, add=
             raise GtdError("title cannot be empty")
         fields["title"] = name
 
+    if waiting and somedaymaybe:
+        raise GtdError("choose one of --waiting or --somedaymaybe")
+
     if inbox:
         fields["status"] = "inbox"
         fields["parent_id"] = None
+    elif waiting:
+        fields["status"] = "waiting"
+    elif somedaymaybe:
+        fields["status"] = "someday"
     elif someday:
         # Same truthiness rule as --onhold: the CLI flag defaults to False.
         fields["status"] = "someday"
@@ -1302,7 +1356,7 @@ def complete(store: Store, ref: str, *, when=None) -> dict:
 
     spawned = None
     if item.get("repeat"):
-        spawned = _respawn(store, item)
+        spawned = _respawn(store, item, after=stamp)
 
     _refresh_container(store, item["parent_id"])
     done = get(store, item["id"])
@@ -1349,40 +1403,107 @@ def postpone(store: Store, ref: str, *, days: int | None = None) -> dict:
     return get(store, item["id"])
 
 
-def _respawn(store: Store, item: dict) -> dict:
+def _walk_repeat(moment, interval: int, unit: str, steps: int):
+    """Advance one date by `steps` whole repeat intervals.
+
+    The loop re-applies the interval rather than multiplying it, so month
+    arithmetic clamps the same way on every step (31 Jan + 1 month + 1 month
+    is 28 Mar, not 31 Mar).
+    """
+    for _ in range(max(0, steps)):
+        moment = dates.add_unit(moment, interval, unit)
+    return moment
+
+
+def next_repeat_dates(item: dict, *, repeat=None, after=None) -> dict:
+    """The defer and due dates of a repeating action's next instance.
+
+    One rule moves both dates, so the next window never comes back with its
+    deadline before the day it opens.
+
+    `from: schedule` keeps the dates on the cadence they were already on: the
+    whole window moves forward by as many intervals as it takes to be upcoming,
+    and the distance between defer and due is preserved.
+
+    `from: complete` starts a fresh window one interval after the action is
+    finished, again keeping the distance between defer and due. A task with
+    only one of the two dates moves that date one interval after completion.
+
+    `after` is when the current instance was finished; it defaults to now, so
+    the editor preview and the real respawn agree. The result is a pair of
+    stored stamps (or None for a date the task does not have).
+    """
+    rule = item.get("repeat") if repeat is None else repeat
+    encoded = _encode_repeat(rule)
+    if not encoded:
+        return {"defer_at": None, "due_at": None}
+    rule = json.loads(encoded)
+    interval = int(rule.get("interval", 1))
+    unit = str(rule.get("unit", "week"))
+    origin = str(rule.get("from", "complete"))
+
+    if isinstance(after, _dt.datetime):
+        moment_after = after
+    else:
+        moment_after = dates.parse_stamp(after) if after else dates.parse_stamp(now())
+    if moment_after is None:
+        moment_after = dates.parse_stamp(now())
+
+    old_defer = dates.parse_stamp(item.get("defer_at"))
+    old_due = dates.parse_stamp(item.get("due_at"))
+
+    def stamp(moment):
+        return dates.to_stamp(moment) if moment is not None else None
+
+    if old_defer is None and old_due is None:
+        # Nothing to walk: a scheduled repeat comes back a full period on, a
+        # completed one comes back immediately (the old behaviour).
+        if origin == "schedule":
+            return {"defer_at": stamp(dates.add_unit(moment_after, interval, unit)),
+                    "due_at": None}
+        return {"defer_at": stamp(moment_after), "due_at": None}
+
+    if origin == "schedule":
+        # Anchor on the defer (the window's opening) when there is one; shift
+        # both dates by the same number of intervals so the window survives.
+        anchor = old_defer or old_due
+        steps = 1
+        probe = dates.add_unit(anchor, interval, unit)
+        while probe <= moment_after and steps < 5000:
+            probe = dates.add_unit(probe, interval, unit)
+            steps += 1
+        return {"defer_at": stamp(_walk_repeat(old_defer, interval, unit, steps))
+                if old_defer else None,
+                "due_at": stamp(_walk_repeat(old_due, interval, unit, steps))
+                if old_due else None}
+
+    # from: complete — open the next window one interval after this one ends,
+    # and keep the window's shape: its day span and both clock times. Using the
+    # old clocks keeps a 09:00 → 18:00 task at those hours however late in the
+    # day it was finished.
+    def at_clock(moment, clock):
+        return moment.replace(hour=clock.hour, minute=clock.minute,
+                              second=0, microsecond=0)
+
+    if old_defer is None:
+        new_due = at_clock(dates.add_unit(moment_after, interval, unit), old_due)
+        return {"defer_at": None, "due_at": stamp(new_due)}
+    new_defer = at_clock(dates.add_unit(moment_after, interval, unit), old_defer)
+    if old_due is None:
+        return {"defer_at": stamp(new_defer), "due_at": None}
+    day_span = (old_due.date() - old_defer.date()).days
+    new_due = _dt.datetime.combine(
+        new_defer.date() + _dt.timedelta(days=max(0, day_span)), old_due.time())
+    return {"defer_at": stamp(new_defer), "due_at": stamp(new_due)}
+
+
+def _respawn(store: Store, item: dict, *, after=None) -> dict:
     """Create the next instance of a repeating action."""
     rule = item["repeat"]
-    interval, unit = int(rule.get("interval", 1)), str(rule.get("unit", "week"))
-    origin = str(rule.get("from", "complete"))
-    moment_now = dates.parse_stamp(now())
-
-    def advance(moment):
-        # Walk the grid until the slot is genuinely upcoming, so a repeating
-        # item that slipped past its date does not keep replaying in the past.
-        guard = 0
-        while moment <= moment_now and guard < 5000:
-            moment = dates.add_unit(moment, interval, unit)
-            guard += 1
-        return moment
-
-    defer = due = None
-    if origin == "schedule":
-        if item.get("defer_at"):
-            defer = dates.to_stamp(advance(dates.parse_stamp(item["defer_at"])))
-        if item.get("due_at"):
-            due = dates.to_stamp(advance(dates.parse_stamp(item["due_at"])))
-        if defer is None and due is None:
-            defer = dates.to_stamp(advance(moment_now))
-    else:
-        if item.get("defer_at"):
-            defer = dates.to_stamp(dates.add_unit(moment_now, interval, unit))
-        if item.get("due_at"):
-            due = dates.to_stamp(advance(dates.parse_stamp(item["due_at"])))
-        if defer is None and due is None:
-            defer = now()
-
+    nxt = next_repeat_dates(item, after=after)
     return create_child(store, item["parent_id"], item["title"],
-                        notes=item.get("notes") or "", defer=defer, due=due,
+                        notes=item.get("notes") or "",
+                        defer=nxt["defer_at"], due=nxt["due_at"],
                         priority=item.get("priority", 0), repeat=rule,
                         review=item.get("review"), tags=tags_of(store, item["id"]),
                         status="active")
