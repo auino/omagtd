@@ -3627,7 +3627,8 @@ class DayExport(TempStore):
         titles = {it["title"] for it in doc["items"]}
         self.assertEqual(titles, {"Later this week"})
         self.assertEqual(doc["counts"]["due"], 0)
-        self.assertEqual(doc["counts"]["overdue"], 1)
+        self.assertEqual(doc["counts"]["deferred"], 1)
+        self.assertEqual(doc["counts"]["overdue"], 0)
 
     def test_markdown_carrying_the_date_and_time(self):
         self._a_day()
@@ -3640,26 +3641,81 @@ class DayExport(TempStore):
         # A flagged task shows its flag.
         self.assertTrue("! Due today" in text or "! **Due today**" in text)
         # The day's own deadline is printed before the work its defer window
-        # swept up.
-        self.assertLess(text.index("## Due"), text.index("## Overdue"))
+        # is still carrying.
+        self.assertLess(text.index("## Due"), text.index("## Deferred"))
 
     def test_a_deferred_task_matches_the_calendar(self):
         # A task whose defer window is already open, with a deadline still
-        # ahead, is swept into the day's Overdue group: grey, marked, listed.
+        # ahead, is the app's D row for the day: it is swept into the day's
+        # Deferred group, separate from work that has really slipped.
         self.capture("Later this week", defer="-1d", due="+3d")
         doc = exporter.day_export(self.store, "today")
         item = next(i for i in doc["items"] if i["title"] == "Later this week")
-        self.assertEqual(item["group"], "overdue")
+        self.assertEqual(item["group"], "deferred")
+
+    def test_deferred_work_has_its_own_group(self):
+        # Deferred is defer on or before the day while the deadline is still
+        # ahead; Overdue is the same open window once the deadline has passed,
+        # or work the window opened with no deadline at all.
+        self.capture("Still live", defer="-1d", due="+3d")
+        self.capture("Already late", defer="-3d", due="-2d")
+        self.capture("No deadline", defer="-3d")
+        doc = exporter.day_export(self.store, "today")
+        self.assertEqual([i["title"] for i in doc["groups"]["deferred"]],
+                         ["Still live"])
+        self.assertEqual([i["title"] for i in doc["groups"]["overdue"]],
+                         ["Already late", "No deadline"])
+        self.assertLess(list(doc["groups"]).index("deferred"),
+                        list(doc["groups"]).index("overdue"))
+
+    def test_no_defferd_tasks_leaves_the_deferred_group_out_whole(self):
+        self.capture("Still live", defer="-1d", due="+3d")
+        self.capture("Already late", defer="-3d", due="-2d")
+        doc = exporter.day_export(self.store, "today", no_deferred=True)
+        self.assertNotIn("deferred", doc["groups"])
+        self.assertNotIn("deferred", doc["counts"])
+        titles = [i["title"] for i in doc["items"]]
+        self.assertNotIn("Still live", titles)
+        self.assertIn("Already late", titles)
+
+    def test_no_overdue_keeps_the_deferred_work(self):
+        # The two opt-outs are independent: dropping the overdue list does not
+        # also drop the work its defer window is still carrying.
+        self.capture("Still live", defer="-1d", due="+3d")
+        self.capture("Already late", defer="-3d", due="-2d")
+        doc = exporter.day_export(self.store, "today", no_overdue=True)
+        self.assertNotIn("overdue", doc["groups"])
+        self.assertEqual([i["title"] for i in doc["groups"]["deferred"]],
+                         ["Still live"])
+        self.assertEqual([i["title"] for i in doc["items"]], ["Still live"])
+
+    def test_the_two_opt_outs_together_keep_only_the_days_own_work(self):
+        # Pin the clock below the deadline: `no_overdue` drops a deadline
+        # already gone by, and the test must not depend on when it runs.
+        from unittest import mock
+        day = core.today()
+        self.capture("Due today", due=day + " 18:00")
+        self.capture("Still live", defer="-1d", due="+3d")
+        self.capture("Already late", defer="-3d", due="-2d")
+        with mock.patch.object(exporter, "now_stamp",
+                               lambda: day + " 12:00"):
+            doc = exporter.day_export(self.store, "today", no_deferred=True,
+                                      no_overdue=True)
+        self.assertEqual(set(doc["groups"]), {"due", "completed"})
+        self.assertEqual([i["title"] for i in doc["items"]], ["Due today"])
 
     def test_tasks_are_ordered_by_deadline_with_undated_ones_last(self):
         # Every group lists its tasks by deadline; the ones without a
         # deadline come behind them all.
         self.capture("Behind", defer="-3d", due="-1d")
         self.capture("Ahead", defer="-3d", due="+1d")
+        self.capture("Later", defer="-3d", due="+5d")
         self.capture("Whenever", defer="-3d")
         doc = exporter.day_export(self.store, "today")
         self.assertEqual([i["title"] for i in doc["groups"]["overdue"]],
-                         ["Behind", "Ahead", "Whenever"])
+                         ["Behind", "Whenever"])
+        self.assertEqual([i["title"] for i in doc["groups"]["deferred"]],
+                         ["Ahead", "Later"])
         self.assertEqual([i["title"] for i in doc["groups"]["due"]], [])
 
     def test_a_context_export_lists_every_task_whatever_its_dates(self):
@@ -3760,8 +3816,9 @@ class DayExport(TempStore):
         # The page is dressed in the accent the app's palette setting names.
         self.assertIn(theme.accent(), html)
         # The day's deadline heads the page before the work its defer window
-        # swept up, and work from earlier days is left out entirely.
-        self.assertLess(html.index("<h2>Due</h2>"), html.index("<h2>Overdue</h2>"))
+        # is still carrying, and work from earlier days is left out entirely.
+        self.assertLess(html.index("<h2>Due</h2>"),
+                        html.index("<h2>Deferred</h2>"))
         self.assertNotIn("Past due", html)
 
     def test_the_report_wears_the_configured_accent(self):
@@ -3804,12 +3861,16 @@ class DayExport(TempStore):
                          {"At work", "Someday work"})
 
     def test_pdf_carries_a_bold_face(self):
-        # Task names are set in a real bold font, not literal asterisks.
+        # Task names are set in a real bold font, not literal asterisks. The
+        # whole PDF carries an icon bitmap that may happen to contain any two
+        # bytes, so the text check looks at the page streams alone.
         self._a_day()
         doc = exporter.day_export(self.store, "today")
         data = exporter.render(doc, "pdf")
         self.assertIn(b"Helvetica-Bold", data)
-        self.assertNotIn(b"**", data)
+        streams = b"\n".join(exporter._pdf_pages(doc, "", ""))
+        self.assertIn(b"/F2 11 Tf", streams)
+        self.assertNotIn(b"**", streams)
 
     def test_pdf_reports_no_structural_errors(self):
         # The hand-written PDF must parse: a real reader pulls the day's text
@@ -3839,9 +3900,9 @@ class DayExport(TempStore):
         out = proc.stdout
         self.assertIn("Due", out)
         self.assertIn("Due today", out)
-        # The day's deadline is printed before the work its defer window
-        # swept up.
-        self.assertLess(out.index("Due today"), out.index("Overdue"))
+        # The day's deadline is printed before the work its defer window is
+        # still carrying.
+        self.assertLess(out.index("Due today"), out.index("Deferred"))
         self.assertNotIn("**", out)
         self.assertNotIn("xref", out)
         self.assertNotIn("Illegal", out)
@@ -3970,6 +4031,37 @@ class DayExport(TempStore):
         self.assertNotIn("Late", text)
         self.assertNotIn("Carried", text)
 
+    def test_cli_export_day_can_leave_out_the_deferred_group(self):
+        # The day's D rows are a group of their own, and the flag drops them
+        # whole while leaving the really-overdue work in place.
+        self.capture("Still live", defer="-1d", due="+3d")
+        self.capture("Already late", defer="-3d", due="-2d")
+        plain = os.path.join(self.home, "plain-deferred.md")
+        proc = self.run_cli("export-day", "today", "-o", plain)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(plain) as handle:
+            text = handle.read()
+        self.assertIn("## Deferred", text)
+        self.assertIn("Still live", text)
+
+        target = os.path.join(self.home, "day.md")
+        proc = self.run_cli("export-day", "today", "--no-defferd-tasks",
+                            "-o", target)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(target) as handle:
+            text = handle.read()
+        self.assertNotIn("## Deferred", text)
+        self.assertNotIn("Still live", text)
+        self.assertIn("Already late", text)
+
+        # The correctly spelled alias removes the same group.
+        alias = os.path.join(self.home, "alias.md")
+        proc = self.run_cli("export-day", "today", "--no-deferred-tasks",
+                            "-o", alias)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(alias) as handle:
+            self.assertNotIn("## Deferred", handle.read())
+
     def test_the_flag_is_named_in_the_command_line_help(self):
         # A flag the help never names is a flag nobody finds: the top-level
         # page says what it does, and the day export's own page lists it.
@@ -3977,9 +4069,12 @@ class DayExport(TempStore):
         self.assertEqual(top.returncode, 0, top.stderr)
         self.assertIn("--no-overdue", top.stdout)
         self.assertIn("leave the overdue list out", top.stdout)
+        self.assertIn("--no-defferd-tasks", top.stdout)
         page = self.run_cli("export-day", "--help")
         self.assertEqual(page.returncode, 0, page.stderr)
         self.assertIn("--no-overdue", page.stdout)
+        self.assertIn("--no-defferd-tasks", page.stdout)
+        self.assertIn("--no-deferred-tasks", page.stdout)
 
     def test_cli_export_context_needs_a_context(self):
         proc = self.run_cli("export-context")

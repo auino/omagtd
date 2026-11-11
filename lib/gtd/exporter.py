@@ -34,29 +34,33 @@ _FORMAT_BY_SUFFIX = {
 # The one suffix a name with no suffix is given, per format.
 _FORMAT_BY_SUFFIX_INV = {"md": ".md", "json": ".json", "yaml": ".yaml", "pdf": ".pdf", "html": ".html"}
 
-# The day's groups: its deadline, what its defer window has swept up, and what
-# got finished.
-_GROUPS = ("due", "overdue", "completed")
+# The day's groups: its deadline, the work its defer window has brought into
+# the day while the deadline is still ahead (the app's D rows), what has
+# already slipped past its deadline, and what got finished.
+_GROUPS = ("due", "deferred", "overdue", "completed")
 
 # A context-scoped export ignores the calendar, so it has one group only: the
 # work that carries the context.
 _CONTEXT_GROUPS = ("context",)
 
-# The day's groups print in this order: its deadline, what its defer window has
-# swept up, and what got finished. A context export has just its own group.
-_PRINT_ORDER = ("due", "overdue", "completed", "context")
+# The day's groups print in this order: its deadline, the defer window's
+# still-live work, what has already slipped, and what got finished. A context
+# export has just its own group.
+_PRINT_ORDER = ("due", "deferred", "overdue", "completed", "context")
 
 _GROUP_HEADING = {
     "due": "Due",
+    "deferred": "Deferred",
     "overdue": "Overdue",
     "completed": "Completed",
     "context": "Context",
 }
 
 # The short word a group counts read as in the one-line summary, set apart from
-# its heading so "Overdue" stays a heading while "overdue" is the count.
+# its heading so "Deferred" stays a heading while "deferred" is the count.
 _GROUP_WORD = {
     "due": "due",
+    "deferred": "deferred",
     "overdue": "overdue",
     "completed": "completed",
     "context": "context",
@@ -119,29 +123,34 @@ def _in_context(item_tags: set[str], wanted: set[str]) -> bool:
 
 def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
                include_meta: bool = True, tags: list[str] | None = None,
-               no_overdue: bool = False, command: str | None = None) -> dict:
+               no_overdue: bool = False, no_deferred: bool = False,
+               command: str | None = None) -> dict:
     """The commitments of one date as one structured document.
 
     An export is about a single date, so it holds only the work that date is
     about, and one rule decides it for every date: what falls due that day, or
     whatever its defer window has already opened -- defer on or before the
-    date, whatever the deadline says. The export of the 5th lists what is due
-    on the 5th and everything available by the 5th, and nothing else. Work
-    finished that day is written too, when the date is today. Within each
-    group the tasks are ordered by deadline and the ones with no deadline
-    come last. `no_overdue` leaves the overdue list out of the document whole:
-    the export then holds only the day's own deadline -- and what finished that
-    day, when the day is today -- with nothing carried over from another day.
-    The day's own deadline is read against the clock too, so a task whose
-    deadline has already gone by, an earlier hour of that day included, is not
-    written either.
+    date. Work the window has opened while its deadline still lies ahead is
+    the app's D row: it is written under Deferred. The same window can also
+    carry work whose deadline has already gone by; that is Overdue. A task
+    with no deadline at all stays with Overdue, since no later day will close
+    its window. Work finished that day is written too, when the date is today.
+    Within each group the tasks are ordered by deadline and the ones with no
+    deadline come last.
+
+    `no_deferred` leaves the Deferred group out whole, and `no_overdue` does
+    the same for Overdue. The two are independent: dropping the overdue list
+    keeps the work whose defer window is still live. With `no_overdue` the
+    day's own deadline is read against the clock too, so a task whose deadline
+    has already gone by, an earlier hour of that day included, is not written
+    either.
 
     When one or more contexts are named with `tags` the export is about the
     context instead of the date: every open task carrying one of those contexts
     -- or a context nested beneath one -- is written, whatever its dates, and
     the calendar is not consulted at all -- no date decides whether a task is
-    listed, nor how the list is grouped -- so `no_overdue`, being a date's
-    question, changes nothing here. The same dictionary drives every
+    listed, nor how the list is grouped -- so `no_overdue` and `no_deferred`,
+    being date questions, change nothing here. The same dictionary drives every
     renderer, and a date that is the day it was taken for, not the day it
     happens to be read on: re-running the export the next morning still reports
     the day the file names. `command` is the command line the file was produced
@@ -163,6 +172,11 @@ def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
             # document carries no "overdue" key at all, and the renderers --
             # which walk the document's own groups -- print no such section.
             groups = tuple(name for name in groups if name != "overdue")
+        if no_deferred:
+            # Deferred work is the day's D rows. It is independent of the
+            # overdue list: a reader who only wants the day's own deadlines
+            # can drop both, one flag at a time.
+            groups = tuple(name for name in groups if name != "deferred")
 
     raw: dict[str, list[dict]] = {name: [] for name in groups}
     if "context" in groups:
@@ -176,10 +190,10 @@ def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
             if _in_context(item_tags, tagset):
                 raw["context"].append(entry)
     else:
-        # The day's two clauses: its deadline, or a defer window already open
-        # by it. A task satisfying both is the day's due work, so "overdue"
-        # takes only the rest -- including a task with no deadline at all,
-        # which the due clause cannot reach.
+        # The day's defer window and its deadlines. A task due that day is the
+        # day's own work, so "deferred" and "overdue" take only the rest: the
+        # window is open by the day (defer on or before it), while the deadline
+        # either still lies ahead (the app's D row) or has already gone by.
         if "due" in groups:
             # With `no_overdue` the day's own deadline is read against the
             # clock: one already gone by here and now is expired, an earlier
@@ -191,12 +205,25 @@ def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
                 "SELECT * FROM item_titles t WHERE " + _open_action_filter()
                 + clause
                 + "ORDER BY t.due_at, t.priority DESC", tuple(params))]
-        if "overdue" in groups:
-            # A task whose defer window is open but whose deadline is another
-            # day. The group is only asked for when the export is meant to
-            # carry it: `no_overdue` drops it above, before this runs.
+        if "deferred" in groups:
+            # The app's D rows for the day: the defer window has opened, but
+            # the deadline that closes it is still ahead. A task without a
+            # deadline has no such closing day, so it stays in Overdue.
             clause = (" AND t.defer_at IS NOT NULL AND substr(t.defer_at, 1, 10) <= ? "
-                      "AND (t.due_at IS NULL OR substr(t.due_at, 1, 10) != ?) ")
+                      "AND t.due_at IS NOT NULL AND substr(t.due_at, 1, 10) > ? ")
+            params = [day, day]
+            raw["deferred"] = [dict(r) for r in store.query(
+                "SELECT * FROM item_titles t WHERE " + _open_action_filter()
+                + clause
+                + "ORDER BY t.due_at, t.priority DESC, t.defer_at",
+                tuple(params))]
+        if "overdue" in groups:
+            # The defer window is open by the day and the deadline is not
+            # ahead of it: already gone by, or absent altogether. The group is
+            # only asked for when the export is meant to carry it:
+            # `no_overdue` drops it above, before this runs.
+            clause = (" AND t.defer_at IS NOT NULL AND substr(t.defer_at, 1, 10) <= ? "
+                      "AND (t.due_at IS NULL OR substr(t.due_at, 1, 10) < ?) ")
             params = [day, day]
             raw["overdue"] = [dict(r) for r in store.query(
                 "SELECT * FROM item_titles t WHERE " + _open_action_filter()
@@ -232,7 +259,8 @@ def day_export(store, *text: str, groups: tuple[str, ...] | None = None,
 
     weekday = _dt.date.fromisoformat(day).strftime("%A")
     # The groups in the order they print: the day's deadline first, then the
-    # work its defer window swept up, then what got finished.
+    # work its defer window is still carrying, then what has slipped, then what
+    # got finished.
     ordered = [name for name in _PRINT_ORDER if name in groups]
     ordered += [name for name in groups if name not in ordered]
     document = {

@@ -1110,18 +1110,24 @@ def cmd_export_day(args, out: Out, store: Store) -> dict:
     file carries the date it was taken in, alongside the day it is about. The
     formats the user may choose are markdown, HTML, JSON, YAML and a printable
     PDF, and the same structured document feeds every one, so a file's contents
-    do not depend on which of them was asked for. A date picks the tasks by two
-    clauses -- a deadline on it, or a defer window already open by it -- the
-    same rule for today and any other day, while a named context drops the date
-    entirely. `--no-overdue` writes the day's own list only: the overdue group
-    is left out whole, and within the day's own deadlines one already gone by,
-    an earlier hour of that day included, is not written either. A named
-    context consults no dates at all, so there the flag changes nothing.
+    do not depend on which of them was asked for. A date picks the tasks by
+    three groups -- a deadline on it, the work its defer window has brought in
+    while the deadline is still ahead (the app's D rows), and what has already
+    slipped past its deadline -- the same rule for today and any other day,
+    while a named context drops the date entirely. `--no-defferd-tasks` leaves
+    the Deferred group out whole; its correctly spelled alias
+    `--no-deferred-tasks` does the same. `--no-overdue` leaves Overdue out
+    whole, and within the day's own deadlines one already gone by, an earlier
+    hour of that day included, is not written either. The two flags are
+    independent. A named context consults no dates at all, so there they
+    change nothing.
     """
     tags = getattr(args, "tag", []) or getattr(args, "context", []) or []
     document = exporter.day_export(store, getattr(args, "date", None),
                                   include_meta=True, tags=tags or None,
                                   no_overdue=bool(getattr(args, "no_overdue", False)),
+                                  no_deferred=bool(getattr(
+                                      args, "no_defferd_tasks", False)),
                                   command=_invoked_command())
     return _emit_export(args, out, store, document, getattr(args, "title", None))
 
@@ -1339,7 +1345,11 @@ def build_parser() -> argparse.ArgumentParser:
                 "gtd export-day --no-overdue  write the day's own deadlines "
                 "and leave the overdue list out\n"
                 "                             of the export entirely "
-                "(an alias: --ignore-overdue)."),
+                "(an alias: --ignore-overdue).\n"
+                "gtd export-day --no-defferd-tasks  leave out the work the "
+                "day's defer window has\n"
+                "                             brought in (also spelled "
+                "--no-deferred-tasks)."),
         parents=[common],
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1749,15 +1759,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     node = add("export-day", cmd_export_day,
                 "write one day's commitments to a file "
-                "(--no-overdue leaves the overdue list out)",
+                "(--no-overdue and --no-defferd-tasks leave groups out)",
                 aliases=("day-export",),
-                description=("What falls due on a date, whatever has been "
-                             "deferred on or before it, and what finished it — or "
+                description=("What falls due on a date, the work its defer "
+                             "window has brought in while the deadline is still "
+                             "ahead (the app's D rows), what has already slipped "
+                             "past its deadline, and what finished it — or "
                              "every task for a context, stamped with the moment "
                              "the export was taken, in markdown, HTML, JSON, YAML "
-                             "or PDF. --no-overdue leaves the overdue list out of "
-                             "the export whole, along with any of the day's own "
-                             "deadlines that has already passed. The day, the "
+                             "or PDF. --no-defferd-tasks leaves the Deferred "
+                             "group out whole (also spelled --no-deferred-tasks); "
+                             "--no-overdue leaves the Overdue group out, along "
+                             "with any of the day's own deadlines that has "
+                             "already passed. The two flags are independent, and "
+                             "neither changes a context export. The day, the "
                              "format and the destination are all arguments; with "
                              "no destination the text formats go to standard out."))
     node.add_argument("date", nargs="?", help="the day, today by default")
@@ -1775,6 +1790,11 @@ def build_parser() -> argparse.ArgumentParser:
                       help="leave the overdue list out of the export whole, "
                            "and any of the day's own deadlines already passed "
                            "— with no effect on a context export")
+    node.add_argument("--no-defferd-tasks", "--no-deferred-tasks",
+                      dest="no_defferd_tasks", action="store_true",
+                      help="leave the Deferred group (the day's D rows) out "
+                           "of the export whole — independent of --no-overdue "
+                           "and with no effect on a context export")
 
     node = add("export-context", cmd_export_context,
                 "write every task for a context to a file",

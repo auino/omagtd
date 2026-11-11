@@ -3631,7 +3631,6 @@ readonly property var primaryViews: [
                 : root.treeRowActive(treeRow) ? root.textColor : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
-              font.bold: treeRow.modelData.kind === "area"
               text: (treeRow.modelData.kind === "project"
                        ? (treeRow.modelData.collapsed ? "▸ " : "▾ ")
                      : treeRow.modelData.kind === "header" ? "" : "· ")

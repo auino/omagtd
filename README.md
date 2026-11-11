@@ -283,28 +283,35 @@ gtd import-lines errands.txt --tag backlog # stamp every line with `backlog`
 ```
 
 `export day` writes the commitments of a single date — what falls due that day,
-whatever has been deferred on or before it, and what got finished — with the
-moment the export was taken and the command line that produced it, to a file in
-markdown, HTML, JSON, YAML or PDF. One
-rule picks the tasks, and it is the same for today and for any other date: a
-deadline on that date, or a defer window already open by it. The export of the
-5th lists what is due on the 5th and everything available by the 5th, and
-nothing else; work finished that day is written too, for today. `--no-overdue`
-leaves the overdue list out of the export whole, so the day's own deadline is
-all that is written — and of that, a deadline already passed, an earlier hour of
-that same day included, is dropped too. Being a date's question it changes
-nothing in a context export. Within each group the tasks are ordered
-by deadline, with those carrying no deadline last. The day, the format and the
-destination are all arguments; the format is taken from the file's suffix unless
-`--format` says otherwise, and with no destination the text formats go to
-standard out:
+the work its defer window has brought in while the deadline is still ahead (the
+D rows in the app), what has already slipped past its deadline or carries none,
+and what got finished — with the moment the export was taken and the command line
+that produced it, to a file in markdown, HTML, JSON, YAML or PDF. One rule picks
+the tasks, and it is the same for today and for any other date: a deadline on
+that date, or a defer window already open by it. The export of the 5th lists what
+is due on the 5th, the still-live work its defer window opened, and what the
+window carried in already late; work finished that day is written too, for today.
+
+Work whose defer window is open and whose deadline is still ahead prints under
+*Deferred*; `--no-defferd-tasks` (also spelled `--no-deferred-tasks`) leaves
+that group out whole. Work whose deadline has already gone by, or that has no
+deadline at all, prints under *Overdue*; `--no-overdue` leaves that group out
+whole, and of the day's own deadlines drops any already passed, an earlier hour
+of that same day included.
+The two flags are independent: dropping overdue keeps the deferred work, and
+dropping deferred keeps the late work. Being date questions, neither changes a
+context export. Within each group the tasks are ordered by deadline, with those
+carrying no deadline last. The day, the format and the destination are all
+arguments; the format is taken from the file's suffix unless `--format` says
+otherwise, and with no destination the text formats go to standard out:
 
 ```bash
 gtd export-day                          # today, markdown, to stdout
 gtd export-day +3d --format pdf -o week.pdf
 gtd export-day 2026-10-05 -o plan.yaml  # the suffix picks YAML
 gtd export-day today --format html -o today.html  # pretty, self-contained page
-gtd export-day --no-overdue -o today.md  # the day's deadlines, no overdue list
+gtd export-day --no-overdue -o today.md  # no overdue list, deferred still shown
+gtd export-day --no-defferd-tasks -o today.md  # no Deferred (D) rows
 gtd export-day --tag work               # every task in the `work` context
 gtd export-context work                 # every task in `work`, to stdout
 gtd export-context work home -o both.html  # two contexts at once
@@ -340,11 +347,13 @@ Both the PDF and the HTML report open with the app's own icon centred above the
 date line, so a printed or viewed page is clearly an OmaGTD report. The mark
 travels inside the file: the HTML page carries it as a `data:` URI and the PDF
 as an image object, neither needing anything beside it. The day's groups print
-in order: *Due* first, then *Overdue* — the work the day's defer window swept
-up — then *Completed*; a context export prints its one *Context* group, with
-every task for the context listed together. The PDF uses the same square bullet, bold task
-names and full details on every page; the HTML export renders the same document
-as a single self-contained page with a small built-in stylesheet.
+in order: *Due* first, then *Deferred* — the work the day's defer window has
+brought in while its deadline is still ahead — then *Overdue* — what has already
+slipped past its deadline or carries none — then *Completed*; a context export
+prints its one *Context* group, with every task for the context listed together. The PDF uses
+the same square bullet, bold task names and full details on every page; the
+HTML export renders the same document as a single self-contained page with a
+small built-in stylesheet.
 
 Both reports are dressed in the accent the app's palette setting names — the
 active desktop theme's accent under `omarchy`, otherwise the preset's own — so
