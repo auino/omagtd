@@ -470,6 +470,75 @@ Enter exactly like the button. Reload once (or reinstall the home-screen app)
 and press again; each press now also raises a notification on the desktop,
 which tells you whether the request reached the server.
 
+### Run it as a service
+
+A terminal is alive only while the terminal is. On an Omarchy machine the
+durable form is a systemd user service: it starts with the desktop session,
+comes back if it ever exits, and keeps the same one password and one database.
+The unit points at the plugin's `bin/gtd` directly, so an `omarchy plugin
+update` is picked up by a restart of the unit — no copying, no symlinks.
+
+`~/.config/systemd/user/omagtd-serve.service`:
+
+```ini
+[Unit]
+Description=OmaGTD phone server (gtd serve)
+After=network.target
+
+[Service]
+ExecStart=%h/.config/omarchy/plugins/com.auino.omagtd/bin/gtd serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+Then, in a shell:
+
+```bash
+systemctl --user enable --now omagtd-serve     # start it and start it every login
+systemctl --user status omagtd-serve           # listening on 127.0.0.1:8765?
+journalctl --user -u omagtd-serve -f           # its output, live
+systemctl --user disable --now omagtd-serve    # taken down again, and unlinked
+```
+
+A few deliberate choices:
+
+- The unit sets **no** `GTD_PASSWORD`. Deliberate: the password stays in the
+  default file (`~/.local/share/omagtd/server.password`) that the unit's user
+  can always read, and the fullscreen app's **Serve · the phone** settings
+  section and `gtd serve --check` keep reporting the same source.
+  To use the environment instead, add one `Environment=GTD_PASSWORD=…` line
+  — but then the phone's password and the pane's report follow that value.
+- Different port or listener? Extend the `ExecStart` line
+  (`… serve --port 8766` or `… serve --bind 0.0.0.0`) and use the same port
+  in `tailscale serve`.
+- `loginctl enable-linger` makes the service run even with no one logged in;
+  useful on a box that is always on for the tailnet.
+- After `omarchy plugin update com.auino.omagtd`, restart the unit so the
+  running server is the new code: `systemctl --user restart omagtd-serve`.
+
+Prefer no unit at all? The Omarchy-native hook runs once per boot, after the
+desktop is up. `~/bin/start-omagtd-serve.sh`:
+
+```bash
+#!/bin/bash
+curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1 && exit 0   # already served
+mkdir -p ~/.local/state/omagtd
+nohup ~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd serve \
+  >>~/.local/state/omagtd/serve.log 2>&1 &
+```
+
+then install it:
+
+```bash
+omarchy hook install post-boot ~/bin/start-omagtd-serve.sh
+```
+
+It has the same one-password, one-database guarantees — it just has no
+supervisor, so a crash stays crashed until the next boot.
+
 ### Reach it from the phone
 
 The phone needs HTTPS — not for secrecy, but because a PWA cannot install or
