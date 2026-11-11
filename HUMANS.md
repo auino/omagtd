@@ -80,7 +80,9 @@ Both project and context names can be nested with a `>` symbol: e.g., `Personal>
 
 Currently, interaction is quite limited, at least in the current version of the app.
 While apps like OmniFocus use a cloud-based service to manage sync across devices, OmaGTD makes use of a local SQLite3 database.
-Therefore, interaction between different devices can still be done, but it requires CLI-based commands (e.g., integrated with `cron`), to either create tasks or export them, e.g., by using a shared folder.
+OmaGTD implements a password protected web service, running through the `gtd serve --bind 0.0.0.0` command (the password must be stored in `~/.local/share/omagtd/server.password` and the HTTP server would listen on port `8765`).
+
+Interaction between different devices can also be done through requires CLI-based commands (e.g., integrated with `cron`), to either create tasks or export them, e.g., by using a shared folder.
 
 Sample task creation command, of a new task in the `Personal>Errands` project (`Errands` is a sub-project under `Personal`), assigned to the `#home>kitchen` context, deferred until tomorrow and due on next friday:
 ```

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>OmaGTD</title>
+
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/style.css?v=6">
+  <link rel="icon" href="/icons/icon-192.png" sizes="192x192">
+
+  <meta name="theme-color" content="#101315" id="theme-color">
+  <meta name="color-scheme" content="dark light">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="GTD">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+</head>
+<body>
+
+<!-- ---------------------------------------------------------------- lock -->
+<section id="lock" class="lock" hidden>
+  <div class="lock-card">
+    <h1>OmaGTD</h1>
+    <p class="dim">Getting Things Done, wherever you are.</p>
+    <form id="lock-form" autocomplete="on">
+      <label for="password">Shared password</label>
+      <input id="password" type="password" name="password" autocomplete="current-password"
+             inputmode="text" enterkeyhint="go" placeholder="the server's password">
+      <button type="submit" class="primary">Unlock</button>
+    </form>
+    <p id="lock-error" class="error" hidden></p>
+    <p class="dim small">The password is kept only on this device. Add the page to your
+      home screen for the full-screen version.</p>
+  </div>
+</section>
+
+<!-- ----------------------------------------------------------------- app -->
+<main id="app" class="app" hidden>
+
+  <header class="top">
+    <div class="heading">
+      <button id="back" class="back" hidden aria-label="Back">‹</button>
+      <h1 id="view-title">Inbox</h1>
+      <span id="view-count" class="count"></span>
+    </div>
+    <div class="top-actions">
+      <span id="sync" class="sync" title="live"></span>
+      <button id="refresh" class="icon" aria-label="Refresh" title="Refresh">↻</button>
+    </div>
+  </header>
+
+  <form id="capture" class="capture" autocomplete="off">
+    <input id="capture-text" type="text" name="capture"
+           placeholder="Capture…   #context   /project/   >friday   ~every week"
+           enterkeyhint="send" autocapitalize="sentences">
+    <button type="submit" aria-label="Capture" title="Capture">+</button>
+  </form>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <section id="list" class="list" aria-live="polite"></section>
+  <section id="tree" class="tree" hidden></section>
+
+  <nav class="tabs" aria-label="Views">
+    <button data-view="inbox"><span class="glyph">▤</span>Inbox</button>
+    <button data-view="calendar"><span class="glyph">▧</span>Calendar</button>
+    <button data-view="overdue"><span class="glyph">◷</span>Overdue</button>
+    <button data-view="today_open"><span class="glyph">◎</span>Today</button>
+    <button data-view="upcoming"><span class="glyph">➤</span>Upcoming</button>
+    <button data-more="1" id="more-tab"><span class="glyph">⋯</span>More</button>
+  </nav>
+
+</main>
+
+<!-- --------------------------------------------------------------- sheet -->
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+    <header class="sheet-head">
+      <h2 id="sheet-title">Task</h2>
+      <button class="icon" data-close aria-label="Close">✕</button>
+    </header>
+    <div id="sheet-body" class="sheet-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js?v=6" type="module"></script>
+</body>
+</html>

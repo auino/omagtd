@@ -33,12 +33,19 @@ from .db import Store, db_path, now
 
 
 class Out:
-    """Terminal output: colours when a human is watching, plain otherwise."""
+    """Terminal output: colours when a human is watching, plain otherwise.
 
-    def __init__(self, args):
+    `stream` and `err` exist for the HTTP front door: a request is one CLI
+    invocation, so the server hands the handler a pair of in-memory buffers
+    instead of the process's own stdout. Nothing else changes.
+    """
+
+    def __init__(self, args, stream=None, err=None, color=None):
         self.json_mode = bool(getattr(args, "json", False))
         self.quiet = bool(getattr(args, "quiet", False))
-        self.color = (
+        self.stream = sys.stdout if stream is None else stream
+        self.err = sys.stderr if err is None else err
+        self.color = color if color is not None else (
             sys.stdout.isatty()
             and not os.environ.get("NO_COLOR")
             and os.environ.get("TERM", "") != "dumb"
@@ -57,20 +64,21 @@ class Out:
 
     def line(self, text: str = "") -> None:
         if not self.json_mode and not self.quiet:
-            print(text)
+            print(text, file=self.stream)
 
     def data(self, payload: dict) -> None:
         """Emit the machine-readable form and stop."""
-        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str),
+              file=self.stream)
 
     def fail(self, message: str, reason: str | None = None) -> None:
         if self.json_mode:
             payload = {"ok": False, "error": message}
             if reason:
                 payload["reason"] = reason
-            print(json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2), file=self.stream)
         else:
-            print(self.red("gtd: ") + message, file=sys.stderr)
+            print(self.red("gtd: ") + message, file=self.err)
         raise SystemExit(2)
 
 
@@ -1318,6 +1326,13 @@ def _today(args, out: Out, store: Store) -> dict:
     return {"ok": True, "view": "today", "count": len(items), "items": items}
 
 
+def cmd_serve(args, out: Out, store: Store) -> dict:
+    """Serve the same commands over HTTP. `main` intercepts this before it
+    opens the per-command store, so `store` is unused."""
+    from .server import serve
+    return serve(args, out)
+
+
 def build_parser() -> argparse.ArgumentParser:
     # The shared options are declared with SUPPRESS defaults on purpose. A
     # subparser inherits them from `common`, and an inherited default would
@@ -1406,6 +1421,36 @@ def build_parser() -> argparse.ArgumentParser:
         return node
 
     add("init", cmd_init, "create the database if it does not exist")
+
+    node = add("serve", cmd_serve, "serve these commands over HTTP",
+               description=(
+                   "A second front door into the same CLI: every request runs "
+                   "one command against the same database, so the desktop, the "
+                   "phone and a terminal never need to reconcile anything.\n"
+                   "\n"
+                   "One shared password guards the whole surface. Put it in a "
+                   "file (--password-file) or in $GTD_PASSWORD rather than on "
+                   "the command line, where `ps` can read it. Bind to a "
+                   "Tailscale interface, not to the open internet."))
+    node.add_argument("--bind", default="127.0.0.1",
+                      help="address to listen on (default 127.0.0.1)")
+    node.add_argument("--port", type=int, default=8765,
+                      help="port to listen on (default 8765)")
+    node.add_argument("--password", help="shared password (prefer a file or env)")
+    node.add_argument("--password-file",
+                      help="read the shared password from this file")
+    node.add_argument("--web-root",
+                      help="directory holding the web client (default: plugin ./web)")
+    node.add_argument("--check", action="store_true",
+                      help="report where the password comes from, then exit; "
+                           "prompts for a candidate to compare")
+    node.add_argument("--check-password", metavar="TEXT",
+                      help="with --check, compare TEXT instead of prompting")
+    node.add_argument("--no-notify-attempts", action="store_true",
+                      help="do not raise a desktop notification for each "
+                           "unlock attempt")
+    node.add_argument("--verbose", action="store_true",
+                      help="log one line per request to stderr")
 
     node = add("capture", cmd_capture, "step 1: capture something",
                description=(
@@ -1852,18 +1897,24 @@ def _undo_label(args) -> str:
     return " ".join(b for b in bits if b)
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, stream=None, color=None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(argv)
     for key, value in GLOBAL_DEFAULTS.items():
         if not hasattr(args, key):
             setattr(args, key, value)
-    out = Out(args)
+    out = Out(args, stream=stream, color=color)
 
     if not getattr(args, "command", None):
-        parser.print_help()
+        parser.print_help(file=out.stream)
         return 0
+
+    # The HTTP front door runs for as long as the process does and keeps its
+    # own connections, so it never wants the store the CLI opens per command.
+    if args.command == "serve":
+        from .server import serve
+        return serve(args, out)
 
     try:
         store = Store(path=args.db, profile=args.profile)

@@ -311,6 +311,13 @@ readonly property var primaryViews: [
     // The narrowest the window gets before the layout drops to a message
     // asking to enlarge it, mirrored from the same setting in the database.
     property int fullscreenWidthLimit: 768
+
+    // `gtd serve --check`: where the shared phone password comes from, how
+    // long it is, and whether something listens on the default port.
+    // Refreshed when the pane opens; none of it is the secret itself.
+    property string serveSource: ""
+    property int serveLength: 0
+    property bool serveRunning: false
     // The view an opening lands on: "inbox", "calendar" or "today", mirrored
     // from the same setting. An unknown value falls back to today, so a value
     // written by some other build can never open somewhere odd.
@@ -689,6 +696,53 @@ readonly property var primaryViews: [
         if (out !== "") root.status = out
       }
     }
+  }
+
+  // Where the shared phone password comes from, and how long it is. The
+  // command reports the source path, never the secret, and refuses to start
+  // without one, so "not configured" is a state the pane can show.
+  Process {
+    id: serveCheckProc
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var out = String(this.text).trim()
+        if (out === "") {
+          root.serveSource = ""
+          root.serveLength = 0
+          return
+        }
+        try {
+          var d = JSON.parse(out)
+          root.serveSource = d.source || ""
+          root.serveLength = d.length || 0
+        } catch (e) {
+          root.serveSource = ""
+          root.serveLength = 0
+        }
+      }
+    }
+  }
+
+  // Whether something is listening on the default port. A bare socket probe:
+  // the server answers healthz, but this is about the listener existing, and
+  // a closed port is a fast, dependency-free answer.
+  Process {
+    id: serveProbeProc
+    onExited: {
+      root.serveRunning = serveProbeProc.exitStatus === Process.Success
+    }
+  }
+
+  // Both at once, for the "Serve / phone" section of the settings pane.
+  function checkServe() {
+    exec(serveCheckProc, [root.cli, "serve", "--check", "--json"])
+    exec(serveProbeProc, [
+      "python3", "-c",
+      "import socket,sys\n"
+      + "s = socket.socket()\n"
+      + "s.settimeout(1.0)\n"
+      + "sys.exit(0 if s.connect_ex(('127.0.0.1', 8765)) == 0 else 1)"
+    ])
   }
 
   // ---- Loading --------------------------------------------------------------
@@ -3265,8 +3319,13 @@ readonly property var primaryViews: [
   // The item pane and the settings pane are two faces of one flickable, so a
   // pane that opens keeps whatever depth the other was read to. Settings then
   // starts part way down its own list and the sections above look as though
-  // they were never there. Every pane starts at its own top.
-  onSettingsOpenChanged: detailFlick.contentY = 0
+  // they were never there. Every pane starts at its own top. The Serve
+  // section re-reads the live facts at the same moment, so an edit to the
+  // password file is visible the next time the pane opens.
+  onSettingsOpenChanged: {
+    detailFlick.contentY = 0
+    if (root.settingsOpen) root.checkServe()
+  }
 
   // ---- Polling ---------------------------------------------------------------
 
@@ -4436,6 +4495,77 @@ readonly property var primaryViews: [
                   foreground: root.textColor
                   enabled: !root.busy
                   onClicked: root.chooseDefaultView("today")
+                }
+              }
+
+              PanelSectionHeader {
+                width: parent.width
+                text: "Serve · the phone"
+                foreground: root.dim
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: "gtd serve fronts these same commands over HTTP; the phone is a "
+                      + "client of it, and the Opening view above is where that web app "
+                      + "lands. The shared password is a file, read once at startup, "
+                      + "and it never reaches the phone in plain text in logs."
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                wrapMode: Text.WordWrap
+                color: root.serveLength > 0 ? gtdTheme.green : root.urgent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: root.serveLength > 0
+                  ? "shared password: " + root.serveLength
+                    + " chars  ·  from " + root.serveSource
+                  : "shared password: not configured — write "
+                    + "~/.local/share/omagtd/server.password first"
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.PlainText
+                color: root.serveRunning ? gtdTheme.green : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                text: root.serveRunning
+                  ? "server: listening on 127.0.0.1:8765"
+                  : "server: not listening on 127.0.0.1:8765"
+              }
+
+              Text {
+                width: parent.width
+                textFormat: Text.InlineRichText
+                wrapMode: Text.WordWrap
+                color: root.dim
+                font.family: "monospace"
+                font.pixelSize: Style.font.caption
+                text: "gtd serve                      start it<br/>"
+                      + "gtd serve --check             verify a typed password<br/>"
+                      + "tailscale serve --bg 8765     HTTPS + a hostname for the phone"
+              }
+
+              Flow {
+                width: parent.width
+                spacing: Style.spacing.xs
+
+                Button {
+                  text: "re-check"
+                  bordered: true
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  foreground: root.textColor
+                  onClicked: root.checkServe()
                 }
               }
 

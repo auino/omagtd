@@ -24,6 +24,8 @@ infomation about this repository, see the [HUMANS.md](HUMANS.md) file.
   urgent one among them, the same ladder the rows use.
 - **Fullscreen view** — the whole five-step workflow, either as a layer-shell
   overlay or as a real window of its own (see *Full workflow* below).
+- **Web app** — the same views in a browser, installable on a phone (see
+  *On your phone* below). One server owns the database; the phone is a client.
 - **`gtd` CLI** — every step is scriptable, so it can be bound to a hotkey.
 
 ## GTD in OmaGTD
@@ -405,6 +407,149 @@ never fades into the bar.
 `fullscreen_default_view` picks the view the fullscreen app lands on when it
 opens — `today` unless you ask for `inbox` or `calendar`. It only names the
 starting point; the keyboard still moves anywhere else once the app is up.
+
+## On your phone
+
+The web app is the same five steps in a browser, sized for a phone and dressed
+in the same palette. Its bottom bar is the fullscreen app's one-tap set —
+Inbox, Calendar, Overdue, Today, Upcoming — with More offering Review
+(the weekly checklist: tap a question to jump to that list, mark it reviewed
+when it is done), Waiting, Someday, Projects (drill in, then back) and
+Contexts (the same). It opens on the same **Opening** view the fullscreen
+app does (Settings → Opening; Inbox, Calendar or Today), and the Settings pane
+shows a **Serve · the phone** section: where the shared password came from,
+whether the server is listening, and the three commands below.
+
+It is not a second implementation: every request runs one command against the
+same database the desktop uses, so there is nothing to sync and nothing to
+merge.
+
+### Start the server
+
+```bash
+# the password lives in a file, not in `ps`
+mkdir -p ~/.local/share/omagtd
+printf '%s' 'a long passphrase' > ~/.local/share/omagtd/server.password
+chmod 600 ~/.local/share/omagtd/server.password
+
+gtd serve                                   # http://127.0.0.1:8765/
+gtd serve --bind 0.0.0.0 --port 8765        # when a tunnel or proxy fronts it
+```
+
+`gtd serve` is a second front door into the CLI, not a service layer: it opens
+the database, journals undo, runs one handler and sweeps, exactly as `gtd
+capture` does in a terminal. A file wins over the environment:
+`--password-file`, else `$GTD_PASSWORD`, else
+`~/.local/share/omagtd/server.password`, else `--password`. There is no
+unauthenticated mode.
+
+The password is the file's text, not a shell expression: no quotes, and
+surrounding whitespace is trimmed. On startup the server prints the exact
+source it read, and this checks it without listening:
+
+```bash
+gtd serve --check                       # prompts for a candidate to compare
+gtd serve --check-password 'what I type'  # non-interactive form
+```
+
+If the web page says the password was not accepted, check these in order:
+
+- The server was **restarted** after the file changed; it reads the password
+  once, at startup.
+- It is reading the file you think: the startup line names the path (with
+  `sudo` or a different `$HOME`/`$GTD_HOME`, the default path moves).
+- `$GTD_PASSWORD` is not set in the shell that starts the server; it wins over
+  the default file.
+- An older `gtd serve` is not still holding the port; a second start fails
+  with "address already in use" and the browser keeps talking to the first.
+
+If nothing happens at all when you press Unlock, the page is still running an
+older copy of the shell. The current one switches screens with an inline style,
+so a stale stylesheet cannot leave the lock painted over the app, and it treats
+Enter exactly like the button. Reload once (or reinstall the home-screen app)
+and press again; each press now also raises a notification on the desktop,
+which tells you whether the request reached the server.
+
+### Reach it from the phone
+
+The phone needs HTTPS — not for secrecy, but because a PWA cannot install or
+use a service worker over plain `http://`. Tailscale is the shortest path: it
+fronts the local port with a certificate and hands you a hostname on the
+tailnet, without any port opening on a public interface.
+
+```bash
+tailscale serve --bg 8765            # HTTPS in front of gtd serve; runs in the background
+tailscale status                     # the "https://<machine>.<tailnet>." line is the phone's URL
+tailscale serve --delete 8765        # taken down again
+```
+
+The phone just needs to be on the tailnet (`tailscale up`). Open that HTTPS
+address in the phone's browser, then **Add to Home Screen**:
+
+- **Android/Chrome** offers an install prompt; the app appears with its own icon.
+- **iOS/Safari** installs from Share → *Add to Home Screen* → *Open as Web App*.
+
+A TLS reverse proxy (Caddy, nginx + a domain) is equivalent: point it at
+`http://127.0.0.1:8765` and nothing else changes. `gtd serve --bind 0.0.0.0`
+then means the machine must be reachable on that interface — keep that for a
+machine behind a firewall you control, and prefer keeping the listener on
+loopback with the proxy in front.
+
+Sanity check from any machine on the path:
+
+```bash
+curl -s https://<machine>.<tailnet>./healthz      # {"ok": true, "app": "omagtd"}
+```
+
+The password is asked for once and kept on that device. Adding to the home
+screen is also what lets iOS keep it: Safari can evict storage for sites it has
+not seen for a week, installed web apps are exempt.
+
+### What travels, and what does not
+
+There is one database and one writer. A change made on the phone is a row in
+the same sqlite file, so:
+
+- the bar pill, the panel and the fullscreen view see it on their next refresh
+  (the bar and panel already poll every `pollIntervalSec`, 60 s by default);
+- the web app learns immediately: it subscribes to `/events`, and the server
+  pushes a revision whenever **any** connection commits (it watches
+  `PRAGMA data_version`, so a change made in a terminal counts too).
+
+That is the whole mechanism. No conflict resolution, no device identity, no
+outbox: last command wins, which is what a single user with two devices means.
+
+A few commands stay on the host because they touch its filesystem or its
+desktop, and the server refuses them over HTTP: `open`, `attach`, `import*`,
+`export*`, `notify`, `db` and `serve`. The web app opens an item's link in the
+browser itself, which is the right answer for `open`.
+
+Two honest limits: a PWA gets no home-screen widget on either platform, and
+"today" is computed in the **server's** timezone, so travelling across zones
+shows the day you left. Run the server in your home timezone.
+
+### The API
+
+One endpoint carries the commands:
+
+```bash
+curl -s http://127.0.0.1:8765/rpc \
+  -H 'Authorization: Bearer a long passphrase' \
+  -d '{"argv": ["capture", "Buy milk", "--due", "tomorrow"]}'
+```
+
+Reads are also available as plain `GET`s: `/v1/state?view=today` and
+`/v1/item/<id>`. `GET /theme.css` serves the palette, and `GET /events` is the
+change feed (the password goes in a query parameter there, because
+`EventSource` cannot set a header). `/` and the static shell need no password —
+they contain no data.
+
+`POST /v1/unlock` is the explicit attempt the web app makes when you press
+Unlock or Enter. The server answers `200` or `401` and, unless started with
+`--no-notify-attempts`, raises one desktop notification saying that a client
+was accepted or refused (with the address, never the password). A remembered
+password reconnecting on page load passes `"announce": false`, so a reload
+stays silent.
 
 ## Development
 

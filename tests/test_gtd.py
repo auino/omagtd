@@ -8,6 +8,7 @@ Everything runs against a throwaway database in a temp directory, so nothing
 here touches the real one.
 """
 
+import argparse
 import contextlib
 import datetime as dt
 import io
@@ -17,12 +18,16 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
 import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 
 from gtd import core, dates, db as db_module, importer, quick, review, theme  # noqa: E402
+from gtd import server  # noqa: E402
 from gtd.core import GtdError  # noqa: E402
 from gtd.db import Store  # noqa: E402
 
@@ -2543,6 +2548,18 @@ class Tree(TempStore):
         again = core.ensure_container(self.store, "Nuvola>Amministrazione")
         self.assertEqual(again["id"], first["id"])
 
+    def test_a_container_can_be_named_by_its_id(self):
+        # The web client draws a branch from the tree, so it must be able to
+        # reopen that exact branch even when two projects share a name.
+        first = core.ensure_container(self.store, "Nuvola>Amministrazione")
+        second = core.ensure_container(self.store, "Montagna>Amministrazione")
+        self.assertEqual(
+            core.lookup_container(self.store, first["id"], core.PROJECT)["id"],
+            first["id"])
+        self.assertEqual(
+            core.lookup_container(self.store, second["id"], core.PROJECT)["id"],
+            second["id"])
+
     def test_angle_path_creates_nested_projects(self):
         core.ensure_container(self.store, "Home", "area")
         leaf = core.ensure_container(self.store, "Move house>Kitchen>Labels",
@@ -4136,3 +4153,535 @@ class ReportTheme(unittest.TestCase):
         # Anything unreadable paints black rather than breaking a stream.
         self.assertEqual(theme.pdf_colour("nonsense"), "0 0 0")
 
+    def test_the_stylesheet_carries_a_presets_colours(self):
+        css = theme.stylesheet("of-dark")
+        self.assertIn("--background: #1c1c1e;", css)
+        self.assertIn("--accent: #9a86f0;", css)
+        self.assertIn("--font:", css)
+
+    def test_the_stylesheet_reads_the_desktop_theme(self):
+        self._write_desktop_theme("#123456")
+        css = theme.stylesheet("omarchy")
+        self.assertIn("--accent: #123456;", css)
+        self.assertIn("--background: #1a1b26;", css)
+        # The hairline is derived, not named by the theme.
+        self.assertRegex(css, r"--line: #[0-9a-f]{6};")
+
+    def test_a_machine_without_a_theme_gets_the_fallback_palette(self):
+        self.assertEqual(theme.palette("omarchy"), theme.FALLBACK_PALETTE)
+        self.assertEqual(theme.palette("of-light")["background"], "#ffffff")
+
+
+
+# --------------------------------------------------------------- http door
+
+
+@contextlib.contextmanager
+def serving(database, password="secret"):
+    """A real server on an ephemeral port, shut down with the test."""
+    config = server.Config(db=database, password=password,
+                           web_root=server.default_web_root())
+    hub = server.Hub()
+    handler = type("TestHandler", (server.Handler,),
+                   {"config": config, "hub": hub})
+    httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=httpd.serve_forever,
+                              kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    try:
+        yield "http://127.0.0.1:%d" % httpd.server_address[1], hub
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        hub.stop()
+
+
+def rpc(base, argv, password="secret"):
+    body = json.dumps({"argv": argv}).encode("utf-8")
+    request = urllib.request.Request(
+        base + "/rpc", data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + password})
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read())
+        finally:
+            exc.close()
+
+
+class Serve(TempStore):
+    """The HTTP front door runs the same commands, and nothing host-bound."""
+
+    def test_the_password_is_required(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = rpc(base, ["state"], password="wrong")
+            self.assertEqual(status, 401)
+            self.assertFalse(payload["ok"])
+
+    def test_the_same_password_in_the_body_is_accepted(self):
+        # An EventSource cannot set a header, so the body is the fallback.
+        with serving(self.store.path) as (base, _hub):
+            body = json.dumps({"argv": ["bar"], "password": "secret"}).encode()
+            request = urllib.request.Request(base + "/rpc", data=body,
+                                             method="POST",
+                                             headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+
+    def test_capture_then_state_share_one_database(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = rpc(base, ["capture", "Buy milk"])
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+
+            status, payload = rpc(base, ["state", "--view", "inbox"])
+            self.assertEqual(status, 200)
+            titles = [item["title"] for item in payload["view"]["items"]]
+            self.assertEqual(titles, ["Buy milk"])
+            # The local engine sees the same row, because there is only one.
+            self.assertEqual(
+                [item["title"] for item in core.list_view(self.store, "inbox")],
+                ["Buy milk"])
+
+    def test_commands_that_need_the_host_are_refused(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = rpc(base, ["open", "abc"])
+            self.assertEqual(status, 400)
+            self.assertIn("host", payload["error"])
+
+            for command in ("attach", "import", "export", "notify", "db", "serve"):
+                status, payload = rpc(base, [command, "x"])
+                self.assertEqual(status, 400, command)
+
+    def test_the_client_cannot_choose_the_database(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = rpc(base, ["capture", "x", "--db", "/tmp/elsewhere"])
+            self.assertEqual(status, 400)
+            self.assertIn("database", payload["error"])
+
+            status, payload = rpc(base, ["capture", "x", "--profile", "other"])
+            self.assertEqual(status, 400)
+
+    def test_a_domain_error_keeps_its_message_and_exit_code(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = rpc(base, ["show", "nosuchitem"])
+            self.assertEqual(status, 422)
+            self.assertFalse(payload["ok"])
+            self.assertTrue(payload["error"])
+
+    def test_an_unknown_command_is_a_bad_request(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = rpc(base, ["frobnicate"])
+            self.assertEqual(status, 400)
+            self.assertIn("unknown command", payload["error"])
+
+    def test_state_accepts_a_view_over_plain_get(self):
+        with serving(self.store.path) as (base, _hub):
+            rpc(base, ["capture", "Write the plan", "--due", "today"])
+            request = urllib.request.Request(
+                base + "/v1/state?view=today",
+                headers={"Authorization": "Bearer secret"})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read())
+            self.assertEqual(payload["view"]["key"], "today")
+            self.assertEqual([i["title"] for i in payload["view"]["items"]],
+                             ["Write the plan"])
+
+    def test_the_shell_is_served_without_the_password(self):
+        with serving(self.store.path) as (base, _hub):
+            with urllib.request.urlopen(base + "/", timeout=5) as response:
+                page = response.read().decode()
+            self.assertIn("OmaGTD", page)
+            self.assertIn("manifest.webmanifest", page)
+
+            with urllib.request.urlopen(base + "/manifest.webmanifest", timeout=5) as response:
+                manifest = json.loads(response.read())
+            self.assertEqual(manifest["display"], "standalone")
+
+    def test_the_stylesheet_keeps_hidden_sections_hidden(self):
+        # `.app` and `.lock` set `display`, so the `hidden` attribute only
+        # works because the stylesheet says so. Without this rule both screens
+        # paint at once and the unlock button looks dead.
+        with serving(self.store.path) as (base, _hub):
+            with urllib.request.urlopen(base + "/style.css", timeout=5) as response:
+                css = response.read().decode()
+                self.assertEqual(response.headers["Cache-Control"], "no-cache")
+            self.assertIn("[hidden] { display: none !important; }", css)
+
+    def test_theme_css_carries_the_palette(self):
+        with serving(self.store.path) as (base, _hub):
+            with urllib.request.urlopen(base + "/theme.css", timeout=5) as response:
+                css = response.read().decode()
+            self.assertIn(":root {", css)
+            self.assertIn("--accent:", css)
+            self.assertIn("--background:", css)
+
+
+class UnlockAttempts(TempStore):
+    """`/v1/unlock`: one press is one check, and the host hears about it."""
+
+    def setUp(self):
+        super().setUp()
+        server._attempt_seen.clear()
+        self.announced = []
+        original = server.notify_attempt
+        server.notify_attempt = (
+            lambda accepted, client, agent="": self.announced.append(accepted))
+        self.addCleanup(setattr, server, "notify_attempt", original)
+
+    def unlock(self, base, payload):
+        body = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            base + "/v1/unlock", data=body, method="POST",
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            try:
+                return exc.code, json.loads(exc.read())
+            finally:
+                exc.close()
+
+    def test_the_right_password_unlocks_and_is_announced(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = self.unlock(base, {"password": "secret"})
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(self.announced, [True])
+
+    def test_a_wrong_password_is_refused_and_announced(self):
+        with serving(self.store.path) as (base, _hub):
+            status, payload = self.unlock(base, {"password": "nope"})
+            self.assertEqual(status, 401)
+            self.assertFalse(payload["ok"])
+            self.assertEqual(self.announced, [False])
+
+    def test_a_remembered_password_reconnecting_stays_quiet(self):
+        # Every page load with a stored password would otherwise ring the
+        # desktop, which turns a useful signal into noise.
+        with serving(self.store.path) as (base, _hub):
+            status, _payload = self.unlock(
+                base, {"password": "secret", "announce": False})
+            self.assertEqual(status, 200)
+            self.assertEqual(self.announced, [])
+
+    def test_an_empty_body_is_a_bad_request(self):
+        with serving(self.store.path) as (base, _hub):
+            request = urllib.request.Request(base + "/v1/unlock", data=b"",
+                                             method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 400)
+            caught.exception.close()
+
+    def test_repeated_refusals_are_not_repeated_notifications(self):
+        self.assertTrue(server.claim_attempt("100.64.0.9", False))
+        self.assertFalse(server.claim_attempt("100.64.0.9", False))
+        # A different outcome, or a different client, is still news.
+        self.assertTrue(server.claim_attempt("100.64.0.9", True))
+        self.assertTrue(server.claim_attempt("100.64.0.10", False))
+
+    def test_the_message_never_carries_the_secret(self):
+        title, body = server.attempt_message(
+            False, "100.64.0.9", "Mozilla/5.0 (Linux; Android 14)")
+        self.assertEqual(title, "OmaGTD unlock refused")
+        self.assertIn("100.64.0.9", body)
+        self.assertIn("Android", body)
+
+
+class PhoneViews(TempStore):
+    """The phone's extra screens run the same allowed commands as everything else."""
+
+    def seed(self, base):
+        rpc(base, ["capture", "Call the dentist", "#phone"])
+        rpc(base, ["capture", "Buy milk", "--due", "today"])
+
+    def test_calendar_returns_the_month(self):
+        with serving(self.store.path) as (base, _hub):
+            self.seed(base)
+            month = dt.date.today().isoformat()[:7]
+            status, payload = rpc(base, ["calendar", "--month", month, "--all"])
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["ok"])
+            days = payload["days"]
+            self.assertTrue(days)
+            today = next(day for day in days if day["date"] == dt.date.today().isoformat())
+            self.assertEqual(len(today["due"]), 1)
+            self.assertEqual(today["due"][0]["title"], "Buy milk")
+
+    def test_review_comes_back_with_its_checklist(self):
+        with serving(self.store.path) as (base, _hub):
+            self.seed(base)
+            status, payload = rpc(base, ["review", "weekly"])
+            self.assertEqual(status, 200)
+            keys = [step["key"] for step in payload["steps"]]
+            self.assertIn("inbox", keys)
+            self.assertEqual(payload["stats"]["inbox"], 1)
+
+    def test_state_name_and_filter_tasks_by_context(self):
+        with serving(self.store.path) as (base, _hub):
+            self.seed(base)
+            status, payload = rpc(base, ["state"])
+            self.assertEqual(status, 200)
+            names = [context["name"] for context in payload["contexts"]]
+            self.assertIn("phone", names)
+
+            status, payload = rpc(base,
+                                  ["state", "--view", "tasks", "--tag", "phone"])
+            self.assertEqual(status, 200)
+            titles = [item["title"] for item in payload["view"]["items"]]
+            self.assertEqual(titles, ["Call the dentist"])
+
+    def test_the_shell_offers_the_phone_views(self):
+        with serving(self.store.path) as (base, _hub):
+            with urllib.request.urlopen(base + "/", timeout=5) as response:
+                page = response.read().decode()
+            for view in ("inbox", "calendar", "overdue", "today_open", "upcoming"):
+                self.assertIn('data-view="' + view + '"', page, view)
+
+            with urllib.request.urlopen(base + "/app.js?v=6", timeout=5) as response:
+                app_js = response.read().decode()
+            for renderer in ("renderCalendar", "renderReview", "renderContexts",
+                             "renderItems"):
+                self.assertIn(renderer, app_js)
+            self.assertIn('["review", "Review"]', app_js)
+            self.assertIn('["contexts", "Contexts"]', app_js)
+            # The stats page became the Overdue tab: it renders as a plain
+            # list, and no trace of the old page remains.
+            self.assertIn('"overdue"', app_js)
+            self.assertNotIn("overview", app_js)
+            # Every task sheet can move its home and toggle its contexts.
+            self.assertIn("projectPicker", app_js)
+            self.assertIn("contextPicker", app_js)
+            self.assertIn('"--untag"', app_js)
+            self.assertIn('"--inbox"', app_js)
+
+    def test_the_web_opens_on_the_fullscreens_default_view(self):
+        # The web app lands where the desktop app does: the same
+        # fullscreen_default_view setting, read out of the same settings row.
+        with serving(self.store.path) as (base, _hub):
+            with urllib.request.urlopen(base + "/app.js?v=6", timeout=5) as response:
+                app_js = response.read().decode()
+            self.assertIn("fullscreen_default_view", app_js)
+            self.assertIn("preferredStartView", app_js)
+            self.assertIn("today_open", app_js)
+
+    def test_the_rows_use_the_fullscreens_colour_decisions(self):
+        # The same rules the fullscreen app paints with (colorKeyFor), in the
+        # same order: late is red, waiting past its deadline is purple,
+        # waiting is blue, someday is pink, a future defer is grey, a flag is
+        # orange, and everything else keeps the foreground.
+        with serving(self.store.path) as (base, _hub):
+            with urllib.request.urlopen(base + "/app.js?v=6", timeout=5) as response:
+                app_js = response.read().decode()
+            self.assertIn("function colorKey", app_js)
+            for key in ("red", "purple", "blue", "pink", "orange", "grey"):
+                self.assertIn('return "' + key + '"', app_js, key)
+
+            with urllib.request.urlopen(base + "/style.css?v=6", timeout=5) as response:
+                css = response.read().decode()
+            for rule in (".row.color-red .title", ".row.color-purple .title",
+                         ".row.color-blue .title", ".row.color-pink .title",
+                         ".row.color-orange .title", ".row.color-grey .title"):
+                self.assertIn(rule, css, rule)
+
+    def test_the_settings_pane_explains_serve(self):
+        # The pane shows where the shared password came from, whether the
+        # server is listening, and the commands. It must read the check as
+        # JSON and name the phone in its heading.
+        path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "app",
+            "FullScreenContent.qml")
+        with open(path, encoding="utf-8") as handle:
+            qml = handle.read()
+        self.assertIn("Serve · the phone", qml)
+        self.assertIn("serveCheckProc", qml)
+        self.assertIn("checkServe()", qml)
+        self.assertIn('serve", "--check", "--json"', qml)
+
+
+class ServeValidation(unittest.TestCase):
+    """The allowlist, without a socket."""
+
+    def test_reads_and_writes_are_allowed(self):
+        for command in ("state", "list", "capture", "done", "defer", "undo",
+                        "triage"):
+            self.assertIsNone(server.validate_argv([command]), command)
+
+    def test_host_bound_and_unknown_commands_are_not(self):
+        for command in ("open", "attach", "import", "export", "notify", "db",
+                        "serve"):
+            self.assertIn("host", server.validate_argv([command]), command)
+        self.assertIn("unknown command", server.validate_argv(["nope"]))
+
+    def test_every_command_the_cli_knows_is_classified(self):
+        # A new subcommand must be added to one of the two lists deliberately;
+        # otherwise it would simply be unreachable (or, worse, exposed).
+        from gtd import cli
+        names = set()
+        for action in cli.build_parser()._actions:
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict):
+                names.update(choices)
+        self.assertEqual(
+            names - server.ALLOWED_COMMANDS - server.HOST_BOUND_COMMANDS, set())
+
+    def test_help_and_injection_are_refused(self):
+        self.assertIn("help", server.validate_argv(["state", "--help"]))
+        self.assertIn("database", server.validate_argv(["state", "--db=/tmp/x"]))
+        self.assertIn("database", server.validate_argv(["state", "--profile", "p"]))
+
+    def test_a_malformed_argv_is_refused(self):
+        self.assertIsNotNone(server.validate_argv(None))
+        self.assertIsNotNone(server.validate_argv([]))
+        self.assertIsNotNone(server.validate_argv("state"))
+        self.assertIsNotNone(server.validate_argv([1, 2]))
+
+
+class ChangeFeed(unittest.TestCase):
+    def test_a_published_revision_reaches_every_subscriber(self):
+        hub = server.Hub()
+        first = hub.subscribe()
+        second = hub.subscribe()
+        # A new subscriber is told where it stands immediately.
+        self.assertEqual(first.get_nowait(), 0)
+        self.assertEqual(second.get_nowait(), 0)
+
+        revision = hub.publish()
+        self.assertEqual(first.get_nowait(), revision)
+        self.assertEqual(second.get_nowait(), revision)
+
+        hub.unsubscribe(first)
+        hub.publish()
+        self.assertEqual(second.get_nowait(), 2)
+        self.assertTrue(first.empty())
+
+
+class Passwords(TempStore):
+    """Where `gtd serve` finds the one shared password."""
+
+    def setUp(self):
+        super().setUp()
+        self._env = os.environ.pop("GTD_PASSWORD", None)
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self):
+        if self._env is not None:
+            os.environ["GTD_PASSWORD"] = self._env
+
+    def args(self, **values):
+        settings = {"password_file": None, "password": ""}
+        settings.update(values)
+        return argparse.Namespace(**settings)
+
+    def test_an_explicit_file_wins_and_is_stripped(self):
+        path = os.path.join(self.home, "pw")
+        with open(path, "w") as handle:
+            handle.write("  from-file\n")
+        os.environ["GTD_PASSWORD"] = "from-env"
+        self.assertEqual(server.load_password(self.args(password_file=path)),
+                         "from-file")
+
+    def test_the_environment_beats_the_default_file(self):
+        with open(os.path.join(self.home, "server.password"), "w") as handle:
+            handle.write("from-file")
+        os.environ["GTD_PASSWORD"] = "from-env"
+        self.assertEqual(server.load_password(self.args()), "from-env")
+
+    def test_the_default_file_is_used_without_an_explicit_choice(self):
+        with open(os.path.join(self.home, "server.password"), "w") as handle:
+            handle.write("from-default-file\n")
+        self.assertEqual(server.load_password(self.args()), "from-default-file")
+
+    def test_a_missing_explicit_file_fails_closed(self):
+        # Naming a file is a promise; falling through to --password or the
+        # environment would start the server with a secret the user did not
+        # mean to use.
+        os.environ["GTD_PASSWORD"] = "from-env"
+        self.assertEqual(
+            server.load_password(self.args(password_file=os.path.join(self.home, "gone"))),
+            "")
+
+    def test_the_flag_is_the_last_resort(self):
+        self.assertEqual(server.load_password(self.args(password="  flag  ")),
+                         "flag")
+
+    def test_the_source_is_named_so_the_operator_can_see_it(self):
+        with open(os.path.join(self.home, "server.password"), "w") as handle:
+            handle.write("from-file")
+        secret, source = server.resolve_password(self.args())
+        self.assertEqual(secret, "from-file")
+        self.assertEqual(source, os.path.join(self.home, "server.password"))
+
+        os.environ["GTD_PASSWORD"] = "from-env"
+        self.assertEqual(server.resolve_password(self.args()),
+                         ("from-env", "$GTD_PASSWORD"))
+        os.environ.pop("GTD_PASSWORD")
+        os.remove(os.path.join(self.home, "server.password"))
+        self.assertEqual(server.resolve_password(self.args(password="flag")),
+                         ("flag", "--password"))
+
+    def test_check_compares_without_starting_a_server(self):
+        import subprocess
+        with open(os.path.join(self.home, "server.password"), "w") as handle:
+            handle.write("right\n")
+        cli = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "gtd")
+        env = dict(os.environ)
+        env["GTD_HOME"] = self.home
+        env.pop("GTD_PASSWORD", None)
+
+        def check(candidate):
+            return subprocess.run(
+                [sys.executable, cli, "serve", "--check", "--check-password", candidate],
+                capture_output=True, text=True, env=env, timeout=20)
+
+        good = check("right")
+        self.assertEqual(good.returncode, 0, good.stdout + good.stderr)
+        self.assertIn("server.password", good.stdout)
+        self.assertIn("match: yes", good.stdout)
+
+        bad = check("wrong")
+        self.assertEqual(bad.returncode, 2, bad.stdout + bad.stderr)
+        self.assertIn("match: no", bad.stdout)
+
+    def test_check_json_is_the_panes_view(self):
+        # The fullscreen settings pane reads this with no terminal in sight,
+        # so the same call must answer as JSON: source, length, and a match
+        # verdict when a candidate is given — never the secret itself.
+        import subprocess
+        with open(os.path.join(self.home, "server.password"), "w") as handle:
+            handle.write("right\n")
+        cli = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "gtd")
+        env = dict(os.environ)
+        env["GTD_HOME"] = self.home
+        env.pop("GTD_PASSWORD", None)
+        base = [sys.executable, cli, "serve", "--check", "--json"]
+
+        alone = json.loads(subprocess.run(
+            base, capture_output=True, text=True, env=env, timeout=20).stdout)
+        self.assertTrue(alone["ok"])
+        self.assertEqual(alone["source"], os.path.join(self.home, "server.password"))
+        self.assertEqual(alone["length"], 5)
+        self.assertNotIn("right", json.dumps(alone))
+
+        good = json.loads(subprocess.run(
+            base + ["--check-password", "right"],
+            capture_output=True, text=True, env=env, timeout=20).stdout)
+        self.assertTrue(good["match"])
+
+        bad = json.loads(subprocess.run(
+            base + ["--check-password", "wrong"],
+            capture_output=True, text=True, env=env, timeout=20).stdout)
+        self.assertFalse(bad["match"])
+
+        env["GTD_PASSWORD"] = "env-only"
+        env["GTD_HOME"] = tempfile.mkdtemp()
+        from_env = json.loads(subprocess.run(
+            base, capture_output=True, text=True, env=env, timeout=20).stdout)
+        self.assertEqual(from_env["source"], "$GTD_PASSWORD")

@@ -658,11 +658,19 @@ def lookup_container(store: Store, name: str, kind: str, *,
     Project names are unique only within their parent: two branches may each
     hold an "Amministrazione". Callers that know where the project belongs pass
     the parent id, and callers resolving a bare name omit it to keep the old
-    whole-database lookup.
+    whole-database lookup. An exact id always wins, so a client that drew a
+    particular branch can reopen that branch even when its name repeats.
     """
+    reference = str(name).strip()
+    by_id = store.one(
+        "SELECT * FROM items WHERE id = ? AND kind = ? AND status <> 'trashed'",
+        (reference, kind))
+    if by_id is not None:
+        return as_dict(by_id)
+
     sql = ("SELECT * FROM items WHERE kind = ? AND title = ? COLLATE NOCASE "
            "AND status <> 'trashed'")
-    params = [kind, str(name).strip()]
+    params = [kind, reference]
     if parent_id is not None:
         sql += " AND parent_id = ?"
         params.append(parent_id)
