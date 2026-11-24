@@ -121,6 +121,19 @@ input[type="text"], input[type="password"], textarea {
   cursor: progress;
 }
 
+#lock-forget {
+  margin-top: 14px;
+  min-height: var(--tap);
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font-size: 13px;
+}
+
+#lock-forget:hover, #lock-forget:focus-visible { color: var(--text); }
+
 /* ------------------------------------------------------------------- app */
 
 .app {

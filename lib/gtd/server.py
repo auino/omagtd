@@ -15,9 +15,10 @@ watches ``PRAGMA data_version`` on a spare connection and pushes a revision
 number to Server-Sent Event subscribers when *any* connection commits.
 
 Authentication is one shared password, because this is a personal system: the
-password lives in a file, clients send it as a bearer token, and the network
-boundary is expected to be Tailscale or a TLS reverse proxy. Bind to loopback
-unless you know what is on the other side of the interface.
+password lives in a file, a client trades it once for an opaque session cookie,
+and after that request no password crosses the wire. The network boundary is
+expected to be Tailscale or a TLS reverse proxy. Bind to loopback unless you
+know what is on the other side of the interface.
 """
 
 from __future__ import annotations
@@ -108,6 +109,56 @@ class Config:
     web_root: Path
     verbose: bool = False
     notify_attempts: bool = True
+
+
+# ------------------------------------------------------------------ sessions
+
+SESSION_COOKIE = "omagtd_session"
+# A session is a standing invitation: it outlives the page that earned it, but
+# it lives in server memory only, so a restart — which is how the password
+# changes — closes every door it opened.
+SESSION_TTL = 7 * 24 * 3600
+
+
+class Sessions:
+    """Opaque, single-server tickets that replace the password on the wire.
+
+    The shared password is a secret this machine holds; a session is not. A
+    log reader or a rogue same-origin listener may at most see one — and it
+    buys nothing more than *this server's* current state, until it expires,
+    the server restarts, or the client logs out.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._tokens: dict[str, float] = {}
+
+    def create(self) -> str:
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            self._prune()
+            self._tokens[token] = time.time() + SESSION_TTL
+        return token
+
+    def is_valid(self, token: str) -> bool:
+        with self._lock:
+            expiry = self._tokens.get(token)
+            if expiry is None:
+                return False
+            if expiry < time.time():
+                del self._tokens[token]
+                return False
+            self._tokens[token] = time.time() + SESSION_TTL  # sliding
+            return True
+
+    def revoke(self, token: str) -> None:
+        with self._lock:
+            self._tokens.pop(token, None)
+
+    def _prune(self) -> None:
+        now = time.time()
+        for token in [t for t, expiry in self._tokens.items() if expiry < now]:
+            del self._tokens[token]
 
 
 # ------------------------------------------------------------------ changes
@@ -325,6 +376,7 @@ class Handler(BaseHTTPRequestHandler):
 
     config: Config = Config(Path("."), "", Path("."))
     hub: Hub = Hub()
+    sessions: Sessions = Sessions()
 
     # ---- plumbing
 
@@ -347,14 +399,22 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _json(self, status: int, payload: dict, *, cache: str = "no-store") -> None:
+    def _json(self, status: int, payload: dict, *, cache: str = "no-store",
+              extra: dict | None = None) -> None:
         body = json.dumps(payload, indent=2, sort_keys=True,
                           default=str).encode("utf-8")
-        self._send(status, body, cache=cache)
+        self._send(status, body, cache=cache, extra=extra)
 
     # ---- auth
 
     def _supplied_password(self) -> str:
+        """The password presented with this request, when it came in by header.
+
+        Deliberately *not* the query string: anything in a URL is something
+        every access log, proxy and browser history gets to keep, and this is
+        the one password that opens everything. Browsers that cannot set a
+        header get a session cookie instead (see :meth:`_session_cookie`).
+        """
         header = self.headers.get("Authorization") or ""
         lowered = header.lower()
         if lowered.startswith("bearer "):
@@ -368,15 +428,56 @@ class Handler(BaseHTTPRequestHandler):
         direct = self.headers.get("X-GTD-Password")
         if direct:
             return direct
-        query = parse_qs(urlparse(self.path).query)
-        return (query.get("password") or [""])[0]
+        return ""
+
+    def _cookie_token(self) -> str:
+        raw = self.headers.get("Cookie") or ""
+        for part in raw.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == SESSION_COOKIE:
+                return value
+        return ""
 
     def _authorized(self) -> bool:
         supplied = self._supplied_password()
-        expected = self.config.password
-        if not expected:
+        if supplied and secrets.compare_digest(supplied, self.config.password):
+            return True
+        token = self._cookie_token()
+        # No expected password means no one may authenticate at all.
+        if token and self.config.password and self.sessions.is_valid(token):
+            return True
+        return False
+
+    def _csrf_ok(self) -> bool:
+        """A cookie rides with a request automatically, so a page on another
+        origin could ride it into a write. Same-origin clients pass; a
+        cross-site fetch is refused. Clients without a browser (curl, the
+        desktop) send no Origin at all and authenticate by header instead."""
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site == "cross-site":
             return False
-        return secrets.compare_digest(supplied, expected)
+        origin = (self.headers.get("Origin") or "").strip().rstrip("/")
+        if origin:
+            proto = (self.headers.get("X-Forwarded-Proto") or "").strip().lower()
+            expected = ("https" if proto == "https" else "http") + "://" \
+                       + (self.headers.get("Host") or "").strip().lower()
+            if origin.lower() != expected:
+                return False
+        return True
+
+    def _is_https(self) -> bool:
+        # The proxy (Tailscale, nginx) says the external scheme. Over a plain
+        # local bind there is no proxy, so the cookie must stay usable over
+        # http:// without the flag that would only help it over https://.
+        return (self.headers.get("X-Forwarded-Proto") or "").strip().lower() == "https"
+
+    def _session_cookie(self, token: str, *, expired: bool = False) -> str:
+        base = f"{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"
+        if expired:
+            return base + "; Max-Age=0"
+        if self._is_https():
+            base += "; Secure"
+        return base + f"; Max-Age={SESSION_TTL}"
 
     # ---- routing
 
@@ -401,12 +502,25 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/v1/item/"):
             self._item(path[len("/v1/item/"):])
             return
+        if path == "/v1/session":
+            self._session()
+            return
         self._static(path)
 
     def do_POST(self) -> None:  # noqa: N802
         path = unquote(urlparse(self.path).path)
+
+        # A valid cookie arrives with any page request, so a write must prove
+        # it comes from this origin before it is trusted with one.
+        if not self._csrf_ok():
+            self._json(403, {"ok": False, "error": "cross-site request"})
+            return
+
         if path == "/v1/unlock":
             self._unlock()
+            return
+        if path == "/v1/logout":
+            self._logout()
             return
         if path != "/rpc":
             self._json(404, {"ok": False, "error": "no such endpoint"})
@@ -436,7 +550,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # The password may ride in the body for clients that cannot set a
-        # header (an EventSource cannot, but a fetch can; both are accepted).
+        # header (both are accepted). The change feed (/events) never comes
+        # here: it authenticates with the session cookie instead.
         if not self._authorized():
             if not (isinstance(body.get("password"), str)
                     and secrets.compare_digest(body["password"], self.config.password)):
@@ -458,8 +573,10 @@ class Handler(BaseHTTPRequestHandler):
         """One explicit password attempt, announced on the host.
 
         The web app calls this when the button (or Enter) is pressed, and only
-        then: a stored password reconnecting on page load authenticates the
-        usual way, so reloading a phone is not an event worth a notification.
+        then, so a password manager or an automated retry cannot use the
+        endpoint as a cracker. On success it mints the session cookie; every
+        later request — including the change feed on reload — rides the
+        cookie, not the password.
         """
         body = self._read_body()
         if body is None:
@@ -481,7 +598,26 @@ class Handler(BaseHTTPRequestHandler):
         if not accepted:
             self._json(401, {"ok": False, "error": "password required"})
             return
+        # The exchange stops here: from this request on the browser proves
+        # itself with the session cookie, so the password is spent exactly
+        # once and no longer travels with any URL, log or reload.
+        cookie = self._session_cookie(self.sessions.create())
+        self._json(200, {"ok": True, "revision": self.hub.revision},
+                   extra={"Set-Cookie": cookie})
+
+    def _session(self) -> None:
+        """Does this device still have a valid session? The re-open path: the
+        page asks, and only then starts painting — no secret is sent on load,
+        so a listener on the port sees at most one useless opaque token."""
+        if not self._authorized():
+            self._json(401, {"ok": False, "error": "no session"})
+            return
         self._json(200, {"ok": True, "revision": self.hub.revision})
+
+    def _logout(self) -> None:
+        self.sessions.revoke(self._cookie_token())
+        self._json(200, {"ok": True}, extra={
+            "Set-Cookie": self._session_cookie("", expired=True)})
 
     def _state(self) -> None:
         if not self._authorized():

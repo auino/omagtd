@@ -7,7 +7,7 @@
 
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/theme.css">
-  <link rel="stylesheet" href="/style.css?v=6">
+  <link rel="stylesheet" href="/style.css?v=7">
   <link rel="icon" href="/icons/icon-192.png" sizes="192x192">
 
   <meta name="theme-color" content="#101315" id="theme-color">
@@ -31,7 +31,9 @@
       <button type="submit" class="primary">Unlock</button>
     </form>
     <p id="lock-error" class="error" hidden></p>
-    <p class="dim small">The password is kept only on this device. Add the page to your
+    <button id="lock-forget" type="button">Forget this device</button>
+    <p class="dim small">The shared password is exchanged once, when you unlock; the session that
+      follows is held by the server, not on this device. Add the page to your
       home screen for the full-screen version.</p>
   </div>
 </section>
@@ -88,6 +90,6 @@
 
 <div id="toast" class="toast" hidden></div>
 
-<script src="/app.js?v=6" type="module"></script>
+<script src="/app.js?v=7" type="module"></script>
 </body>
 </html>

@@ -3371,6 +3371,73 @@ class CommandLine(TempStore):
             else:
                 os.environ["GTD_HOME"] = previous
 
+    def test_an_imported_local_path_is_kept_reference_only(self):
+        # A stranger's export may name any file readable on this machine. The
+        # import records the reference, but must not gather the file into its
+        # own store: the bytes were never part of what was imported.
+        outsider = os.path.join(self.home, "elsewhere.txt")
+        with open(outsider, "w", encoding="utf-8") as handle:
+            handle.write("a file on the importing machine, not in the export")
+        record = {"title": "A task",
+                  "attachments": [{"name": "elsewhere.txt", "uri": outsider}]}
+        feed = os.path.join(self.home, "feed.json")
+        with open(feed, "w", encoding="utf-8") as handle:
+            json.dump({"items": [record]}, handle)
+
+        fresh_home = os.path.join(self.home, "restore")
+        os.makedirs(fresh_home)
+        previous = os.environ.get("GTD_HOME")
+        os.environ["GTD_HOME"] = fresh_home
+        try:
+            fresh = Store()
+            self.addCleanup(fresh.close)
+            result = importer.import_file(fresh, feed)
+            self.assertEqual(result["attachments"], 1)
+            row = fresh.one("SELECT name, uri FROM attachments")
+            self.assertEqual(row["name"], "elsewhere.txt")
+            self.assertEqual(row["uri"], outsider)
+            copied = []
+            managed = os.path.join(fresh_home, "attachments")
+            if os.path.isdir(managed):
+                for _dirpath, _dirs, files in os.walk(managed):
+                    copied += files
+            self.assertEqual(copied, [], copied)
+        finally:
+            if previous is None:
+                os.environ.pop("GTD_HOME", None)
+            else:
+                os.environ["GTD_HOME"] = previous
+
+    def test_the_zip_bundles_only_files_the_store_owns(self):
+        import zipfile
+
+        managed = os.path.join(self.home, "spec.txt")
+        with open(managed, "w", encoding="utf-8") as handle:
+            handle.write("the spec")
+        created = self.run_cli("capture", "Read the spec", "--attach", managed)
+        item_id = created["item"]["id"]
+
+        # A row may point anywhere on this machine (an imported reference
+        # does). The export's boundary is the store's own folder, so that
+        # file has no business shipping with it.
+        outsider = os.path.join(self.home, "elsewhere.txt")
+        with open(outsider, "w", encoding="utf-8") as handle:
+            handle.write("not part of the store")
+        self.store.run(
+            "INSERT INTO attachments(id, item_id, name, uri, created_at, updated_at) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            ("a-outside", item_id, "elsewhere.txt", outsider,
+             core.now(), core.now()))
+
+        target = os.path.join(self.home, "scoped.zip")
+        self.run_cli("export", "--format", "zip", "-o", target)
+        with zipfile.ZipFile(target) as archive:
+            names = archive.namelist()
+        bundled = [n for n in names if n.startswith("attachments/")]
+        self.assertEqual(len(bundled), 1, names)
+        self.assertTrue(any(n.endswith("spec.txt") for n in bundled), bundled)
+        self.assertFalse(any("elsewhere" in n for n in names), names)
+
 
     def test_open_without_link_returns_reason(self):
         item_id = self.run_cli("capture", "Nope")["item"]["id"]
@@ -4393,6 +4460,135 @@ class UnlockAttempts(TempStore):
         self.assertIn("Android", body)
 
 
+class Sessions(TempStore):
+    """One password, traded once, for a session no log can reuse.
+
+    The shared password is the last secret that may cross a URL, a proxy or
+    an access log; after the unlock it is replaced by an opaque, server-held
+    ticket that buys only this server's state, until it is revoked, expires or
+    the process dies.
+    """
+
+    def unlock_cookie(self, base):
+        body = json.dumps({"password": "secret", "announce": False}).encode()
+        request = urllib.request.Request(
+            base + "/v1/unlock", data=body, method="POST",
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=5) as response:
+            self.assertEqual(response.status, 200)
+            cookie = response.headers.get("Set-Cookie") or ""
+        self.assertIn(server.SESSION_COOKIE, cookie, cookie)
+        return cookie
+
+    def test_the_cookie_is_http_only_and_same_site(self):
+        with serving(self.store.path) as (base, _hub):
+            cookie = self.unlock_cookie(base)
+            lowered = cookie.lower()
+            self.assertIn("httponly", lowered)
+            self.assertIn("samesite=strict", lowered)
+            self.assertNotIn("secret", cookie)
+
+    def test_the_cookie_opens_reads_and_writes(self):
+        with serving(self.store.path) as (base, _hub):
+            cookie = self.unlock_cookie(base)
+
+            request = urllib.request.Request(
+                base + "/v1/state", headers={"Cookie": cookie})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+
+            body = json.dumps({"argv": ["capture", "Session task"]}).encode()
+            request = urllib.request.Request(
+                base + "/rpc", data=body, method="POST",
+                headers={"Content-Type": "application/json",
+                         "Cookie": cookie})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+
+    def test_the_change_feed_accepts_the_cookie(self):
+        with serving(self.store.path) as (base, _hub):
+            cookie = self.unlock_cookie(base)
+            request = urllib.request.Request(base + "/events",
+                                             headers={"Cookie": cookie})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                first = response.readline()
+                self.assertTrue(first.startswith(b"retry"), first)
+
+    def test_an_unknown_cookie_is_refused(self):
+        with serving(self.store.path) as (base, _hub):
+            request = urllib.request.Request(
+                base + "/v1/state",
+                headers={"Cookie": f"{server.SESSION_COOKIE}=forged"})
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 401)
+            caught.exception.close()
+
+    def test_the_password_rides_no_url_anymore(self):
+        with serving(self.store.path) as (base, _hub):
+            request = urllib.request.Request(base + "/v1/state?password=secret")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 401)
+            caught.exception.close()
+
+    def test_logout_revokes_the_session(self):
+        with serving(self.store.path) as (base, _hub):
+            cookie = self.unlock_cookie(base)
+            request = urllib.request.Request(base + "/v1/logout", method="POST",
+                                             headers={"Cookie": cookie})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertIn("Max-Age=0",
+                              response.headers.get("Set-Cookie") or "")
+
+            request = urllib.request.Request(
+                base + "/v1/state", headers={"Cookie": cookie})
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 401)
+            caught.exception.close()
+
+    def test_the_session_endpoint_reports_it(self):
+        with serving(self.store.path) as (base, _hub):
+            cookie = self.unlock_cookie(base)
+            request = urllib.request.Request(base + "/v1/session",
+                                             headers={"Cookie": cookie})
+            with urllib.request.urlopen(request, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+                self.assertTrue(json.loads(response.read())["ok"])
+
+            request = urllib.request.Request(base + "/v1/session")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 401)
+            caught.exception.close()
+
+    def test_a_cross_site_request_is_blocked_even_with_the_cookie(self):
+        # The cookie rides with a request automatically, so a page on another
+        # origin could ride it into a write. Same-origin and header clients
+        # must keep working; cross-site must not.
+        with serving(self.store.path) as (base, _hub):
+            cookie = self.unlock_cookie(base)
+
+            request = urllib.request.Request(
+                base + "/rpc",
+                data=json.dumps({"argv": ["capture", "Sneaky"]}).encode(),
+                method="POST",
+                headers={"Content-Type": "application/json",
+                         "Cookie": cookie,
+                         "Origin": "https://elsewhere.example"})
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(caught.exception.code, 403)
+            caught.exception.close()
+
+            # A client without a browser, or one on the same origin, is fine.
+            status, _ = rpc(base, ["capture", "Honest"])
+            self.assertEqual(status, 200)
+
+
 class PhoneViews(TempStore):
     """The phone's extra screens run the same allowed commands as everything else."""
 
@@ -4443,7 +4639,7 @@ class PhoneViews(TempStore):
             for view in ("inbox", "calendar", "overdue", "today_open", "upcoming"):
                 self.assertIn('data-view="' + view + '"', page, view)
 
-            with urllib.request.urlopen(base + "/app.js?v=6", timeout=5) as response:
+            with urllib.request.urlopen(base + "/app.js?v=7", timeout=5) as response:
                 app_js = response.read().decode()
             for renderer in ("renderCalendar", "renderReview", "renderContexts",
                              "renderItems"):
@@ -4464,7 +4660,7 @@ class PhoneViews(TempStore):
         # The web app lands where the desktop app does: the same
         # fullscreen_default_view setting, read out of the same settings row.
         with serving(self.store.path) as (base, _hub):
-            with urllib.request.urlopen(base + "/app.js?v=6", timeout=5) as response:
+            with urllib.request.urlopen(base + "/app.js?v=7", timeout=5) as response:
                 app_js = response.read().decode()
             self.assertIn("fullscreen_default_view", app_js)
             self.assertIn("preferredStartView", app_js)
@@ -4476,18 +4672,36 @@ class PhoneViews(TempStore):
         # waiting is blue, someday is pink, a future defer is grey, a flag is
         # orange, and everything else keeps the foreground.
         with serving(self.store.path) as (base, _hub):
-            with urllib.request.urlopen(base + "/app.js?v=6", timeout=5) as response:
+            with urllib.request.urlopen(base + "/app.js?v=7", timeout=5) as response:
                 app_js = response.read().decode()
             self.assertIn("function colorKey", app_js)
             for key in ("red", "purple", "blue", "pink", "orange", "grey"):
                 self.assertIn('return "' + key + '"', app_js, key)
 
-            with urllib.request.urlopen(base + "/style.css?v=6", timeout=5) as response:
+            with urllib.request.urlopen(base + "/style.css?v=7", timeout=5) as response:
                 css = response.read().decode()
             for rule in (".row.color-red .title", ".row.color-purple .title",
                          ".row.color-blue .title", ".row.color-pink .title",
                          ".row.color-orange .title", ".row.color-grey .title"):
                 self.assertIn(rule, css, rule)
+
+    def test_the_shell_keeps_no_password_and_carries_no_url_secret(self):
+        # The shared password is exchanged exactly once (the unlock) and then
+        # replaced by a server-issued cookie: nothing secret belongs in the
+        # device's storage, and nothing secret belongs in any URL, so no
+        # access log on the path can keep one.
+        with serving(self.store.path) as (base, _hub):
+            with urllib.request.urlopen(base + "/app.js?v=7", timeout=5) as response:
+                app_js = response.read().decode()
+            self.assertNotIn("localStorage", app_js)
+            self.assertNotIn("?password=", app_js)
+            self.assertIn('new EventSource("/events")', app_js)
+            self.assertIn("/v1/session", app_js)
+            self.assertIn("/v1/logout", app_js)
+
+            with urllib.request.urlopen(base + "/", timeout=5) as response:
+                page = response.read().decode()
+            self.assertIn("Forget this device", page)
 
     def test_the_settings_pane_explains_serve(self):
         # The pane shows where the shared password came from, whether the

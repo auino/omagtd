@@ -33,7 +33,7 @@ const MONTHS = ["January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December"];
 
 const app = {
-  password: localStorage.getItem("omagtd.password") || "",
+  authed: false,
   view: "inbox",
   project: null,
   projectTitle: "",
@@ -70,12 +70,12 @@ class ApiError extends Error {
 // ------------------------------------------------------------------- api
 
 async function api(argv) {
+  // No credentials here: the session cookie rides along for same-origin
+  // requests, so the password is exactly one request long (the unlock) and no
+  // later request can leak it into a log or a proxy.
   const response = await fetch("/rpc", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": "Bearer " + app.password,
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ argv }),
   });
 
@@ -87,10 +87,9 @@ async function api(argv) {
   }
 
   if (response.status === 401) {
-    // The stored secret is no good any more. Dropping it stops the page (and
-    // a password manager) from retrying the old value forever.
-    app.password = "";
-    localStorage.removeItem("omagtd.password");
+    // The session ended (server restarted, or the password changed). Stop,
+    // and ask again at the lock — no secret is re-sent by any retry.
+    app.authed = false;
     lock("That password was not accepted.");
     throw new ApiError("password", payload);
   }
@@ -257,9 +256,9 @@ function lock(message) {
   setTimeout(() => $("#password").focus(), 30);
 }
 
-// `announce` is true only for a press. A password remembered on this device
-// reconnecting on load goes through the same check without ringing the
-// desktop, so a reload is not mistaken for someone trying the door.
+// `announce` is true only for a press. A device that already earned a session
+// reconnecting on load goes through /v1/session instead — no password moves,
+// so nothing to ring the desktop about.
 async function unlock(password, { announce = false } = {}) {
   if (app.unlocking) return;
   app.unlocking = true;
@@ -281,10 +280,7 @@ async function unlock(password, { announce = false } = {}) {
     try { payload = await response.json(); } catch { /* not JSON */ }
 
     if (response.status === 401) {
-      // Forget the rejected secret on this device: a stale value in storage
-      // (or a password manager) would otherwise retry it on every load.
-      app.password = "";
-      localStorage.removeItem("omagtd.password");
+      app.authed = false;
       lock("That password was not accepted.");
       return;
     }
@@ -293,8 +289,8 @@ async function unlock(password, { announce = false } = {}) {
       return;
     }
 
-    app.password = password;
-    localStorage.setItem("omagtd.password", password);
+    app.authed = true;
+    // The password just bought a session; it is spent here and nowhere after.
     // The web app opens where the app opens: the same "Opening" setting the
     // full-screen pane owns (Inbox, Calendar or Today). It is read once, on
     // the very first unlock; a later unlock after an expiry is a re-entry, not
@@ -323,7 +319,7 @@ function stop() {
 }
 
 function start() {
-  if (!app.password) { lock(); return; }
+  if (!app.authed) { lock(); return; }
   stop();
   setView(app.view, { reload: false });
   refresh({ quiet: true });
@@ -335,7 +331,10 @@ function start() {
 
 function connect() {
   if (!("EventSource" in window)) return;
-  const events = new EventSource("/events?password=" + encodeURIComponent(app.password));
+  // The change feed authenticates with the session cookie: nothing in the
+  // URL, so no access log anywhere on the path can keep a copy of the
+  // password.
+  const events = new EventSource("/events");
   app.events = events;
 
   events.onopen = () => markSync("live");
@@ -436,7 +435,7 @@ function openMore() {
 // --------------------------------------------------------------- refresh
 
 async function refresh({ quiet = false } = {}) {
-  if (!app.password) return;
+  if (!app.authed) return;
   const seq = ++app.seq;
   const view = app.view;
   const project = app.project;
@@ -1099,6 +1098,16 @@ function wire() {
   $("#refresh").addEventListener("click", () => refresh());
   $("#back").addEventListener("click", goBack);
 
+  // "Forget this device" revokes the session on the server and drops the
+  // cookie: the next visit asks for the password again.
+  $("#lock-forget").addEventListener("click", async () => {
+    try {
+      await fetch("/v1/logout", { method: "POST" });
+    } catch { /* offline */ }
+    app.authed = false;
+    lock();
+  });
+
   $("#sheet").addEventListener("click", (event) => {
     if (event.target.dataset.close !== undefined) hideSheet();
   });
@@ -1108,7 +1117,7 @@ function wire() {
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && app.password) {
+    if (!document.hidden && app.authed) {
       refresh({ quiet: true });
       if (!app.events) connect();
     }
@@ -1121,8 +1130,20 @@ if ("serviceWorker" in navigator && (location.protocol === "https:" || location.
 
 wire();
 paintStatusBar();
-if (app.password) {
-  unlock(app.password);
-} else {
-  lock();
-}
+
+// Re-open: the device shows the lock unless it already holds a valid session.
+// No secret moves on load — a listener that is not the server sees an empty
+// GET, and the page simply stays locked.
+(async function reopen() {
+  let ok = false;
+  try {
+    ok = (await fetch("/v1/session")).status === 200;
+  } catch { /* offline */ }
+  if (!ok) { lock(); return; }
+  app.authed = true;
+  if (!app.viewChosen) {
+    app.view = await preferredStartView() || app.view;
+  }
+  setScreen("app");
+  start();
+})();

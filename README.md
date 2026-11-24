@@ -524,7 +524,15 @@ desktop is up. `~/bin/start-omagtd-serve.sh`:
 
 ```bash
 #!/bin/bash
-curl -sf http://127.0.0.1:8765/healthz >/dev/null 2>&1 && exit 0   # already served
+# Only when nobody we can verify owns the port. Anything answering a plain
+# healthz tells us nothing about who is listening; a different local account
+# could be, and we would rather skip a start than hand credentials to it.
+PORT=8765
+LISTENER=$(ss -ltnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)
+if [ -n "$LISTENER" ]; then
+  OWNER=$(stat -c %U "/proc/$LISTENER" 2>/dev/null)
+  [ "$OWNER" = "$USER" ] || { echo "port $PORT held by $OWNER; not starting gtd serve"; exit 1; }
+fi
 mkdir -p ~/.local/state/omagtd
 nohup ~/.config/omarchy/plugins/com.auino.omagtd/bin/gtd serve \
   >>~/.local/state/omagtd/serve.log 2>&1 &
@@ -570,9 +578,13 @@ Sanity check from any machine on the path:
 curl -s https://<machine>.<tailnet>./healthz      # {"ok": true, "app": "omagtd"}
 ```
 
-The password is asked for once and kept on that device. Adding to the home
-screen is also what lets iOS keep it: Safari can evict storage for sites it has
-not seen for a week, installed web apps are exempt.
+The password is asked for once, when you press Unlock; from that moment the
+device holds a session cookie set by the server — `HttpOnly`, `SameSite=Strict`,
+up to a week — and no later request carries the password, so it appears in no
+access log and no reload. A server restart (which is how the password changes)
+closes every session, and the lock screen's **Forget this device** revokes this
+one. Adding to the home screen is also what lets iOS keep it: Safari can evict
+storage for sites it has not seen for a week, installed web apps are exempt.
 
 ### What travels, and what does not
 
@@ -609,16 +621,19 @@ curl -s http://127.0.0.1:8765/rpc \
 
 Reads are also available as plain `GET`s: `/v1/state?view=today` and
 `/v1/item/<id>`. `GET /theme.css` serves the palette, and `GET /events` is the
-change feed (the password goes in a query parameter there, because
-`EventSource` cannot set a header). `/` and the static shell need no password —
+change feed; it authenticates with the session cookie the unlock set
+(`/events?password=…` is no longer accepted — nothing secret belongs in a URL).
+`GET /v1/session` answers whether the caller holds a valid session, and
+`POST /v1/logout` revokes one. `/` and the static shell need no password —
 they contain no data.
 
 `POST /v1/unlock` is the explicit attempt the web app makes when you press
-Unlock or Enter. The server answers `200` or `401` and, unless started with
-`--no-notify-attempts`, raises one desktop notification saying that a client
-was accepted or refused (with the address, never the password). A remembered
-password reconnecting on page load passes `"announce": false`, so a reload
-stays silent.
+Unlock or Enter. The server answers `200` or `401`; on `200` it sets the
+session cookie described above, which is what every following request —
+including the `/events` feed on a reload — uses instead of the password.
+Unless the server was started with `--no-notify-attempts`, the attempt also
+raises one desktop notification saying that a client was accepted or refused
+(with the address, never the password).
 
 ## Development
 
@@ -639,4 +654,8 @@ and extra preset colors. Keep the status colors and row glyphs aligned.
 
 ## License
 
-[MIT](LICENSE)
+OmaGTD itself: [MIT](LICENSE).
+
+The vendored Omarchy UI kit under `app/Ui/` and `app/Commons/` carries its
+own copyright and MIT permission notice, retained in [LICENSE.md](LICENSE.md)
+in accordance with the Omarchy project's release terms.

@@ -1018,7 +1018,9 @@ def _export_zip(args, out: Out, store: Store) -> dict:
                 entries.append((store.path.name, handle.read()))
 
     # Bundle the attached files, so an export can be restored somewhere the
-    # originals never existed.
+    # originals never existed. Only files inside this store's managed folder:
+    # a row may otherwise name any file readable on the machine, and none of
+    # those travels with the export.
     seen_attachments = set()
     for row in store.query("SELECT item_id, uri FROM attachments"):
         uri = str(row["uri"] or "")
@@ -1029,6 +1031,8 @@ def _export_zip(args, out: Out, store: Store) -> dict:
             continue
         entry = importer._attachment_file_name(str(row["item_id"]), uri)
         if entry in seen_attachments or not path.exists():
+            continue
+        if not core.is_stored_attachment(store, path):
             continue
         seen_attachments.add(entry)
         with open(path, "rb") as handle:

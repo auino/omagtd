@@ -699,8 +699,13 @@ def _restore_attachments(store, item_id: str, fields: dict, result: dict) -> Non
             uri, label = raw, None
         if not uri:
             continue
+        # A record may name any file readable on this machine, so by default
+        # the import keeps the reference and copies nothing. Only the zip
+        # path marks its own staged files (``_copy``), because those bytes
+        # were part of the archive the user imported.
+        copy_local = isinstance(raw, dict) and raw.get("_copy") is True
         try:
-            core.add_attachment(store, item_id, uri, name=label)
+            core.add_attachment(store, item_id, uri, name=label, copy=copy_local)
             result["attachments"] += 1
         except GtdError as exc:
             result["warnings"].append(f"attachment {uri}: {exc}")
@@ -886,7 +891,11 @@ def _import_zip(store, path: Path, *, dry_run=False, progress=False,
                             continue
                         ref = attachment.get("file")
                         if ref and ref in extracted:
+                            # This byte-for-byte came out of the archive the
+                            # user imported, so — and only so — it is allowed
+                            # to be copied into the new store's folder.
                             attachment["uri"] = extracted[ref]
+                            attachment["_copy"] = True
             return import_json(store, payload, dry_run=dry_run, progress=progress,
                                source=f"{path}:{member}", extra_tag=extra_tag)
 
@@ -1476,9 +1485,13 @@ def _export_attachments(item: dict, store) -> list[dict]:
         file_name = None
         if uri:
             # Relative rows only resolve against the store they belong to, so
-            # the database is what decides whether the file is really there.
+            # the database is what decides whether the file is really there —
+            # and only a file *inside* this store's managed folder is one it
+            # is allowed to ship (a reference imported from elsewhere names a
+            # file on the importer's machine, not ours).
             local = core.attachment_path(store, uri)
-            if local is not None and local.exists():
+            if local is not None and local.exists() \
+                    and core.is_stored_attachment(store, local):
                 file_name = _attachment_file_name(str(item.get("id") or "task"), uri)
         out.append({"name": row.get("name") or "", "uri": uri, "file": file_name})
     return out

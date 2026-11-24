@@ -493,14 +493,20 @@ def attachment_path(store: Store, uri: str) -> Path | None:
 
 
 def _store_attachment(store: Store, item_id: str, uri: str,
-                     name: str | None) -> tuple[str, str]:
-    """Copy a local file into this item's managed attachment folder.
+                     name: str | None, *, copy: bool = True
+                     ) -> tuple[str, str]:
+    """Record a file or URL against an item.
 
     Returns `(stored_uri, label)`. URLs and paths that do not exist are kept
     as-is, so a link to something on the web still works and a file that is
     attached before it is written is not silently dropped. A file that is
     copied is recorded by the path relative to the store's own folder, which
     is what makes it travel with the database rather than with this machine.
+
+    ``copy=False`` keeps the reference exactly as given and copies nothing —
+    the call site is deciding whether this computer may gather that file into
+    the store at all (a local attach may, an import of a stranger's JSON may
+    not).
     """
     label = (name or uri.rstrip("/").rsplit("/", 1)[-1]).strip() or uri
     if _remote_uri(uri):
@@ -517,6 +523,8 @@ def _store_attachment(store: Store, item_id: str, uri: str,
         return str(resolved.relative_to(_store_root(store))), label
     except ValueError:
         pass
+    if not copy:
+        return uri, label
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-") or "file"
     # Keep copied files together by task; the digest avoids collisions inside
     # that task's attachment folder.
@@ -527,7 +535,26 @@ def _store_attachment(store: Store, item_id: str, uri: str,
     return str(destination.relative_to(_store_root(store))), label
 
 
-def add_attachment(store: Store, ref: str, uri: str, *, name: str | None = None) -> dict:
+def is_stored_attachment(store: Store, path: Path) -> bool:
+    """Whether a file is one this store owns, inside its managed folder.
+
+    Only these travel in a file-inclusive export. A reference imported from
+    someone else's JSON may name any file readable on this machine — the store
+    must never ship *that*, so the export resolves the boundary itself instead
+    of trusting whatever path the row holds. Computed without creating
+    anything: this is a read path.
+    """
+    managed = (Path(store.path).resolve().parent / "attachments").resolve()
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(managed)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def add_attachment(store: Store, ref: str, uri: str, *, name: str | None = None,
+                   copy: bool = True) -> dict:
     """Point an item at a file or URL. An item holds one attachment.
 
     Giving it a second replaces the first, because a file picker hands over
@@ -536,12 +563,14 @@ def add_attachment(store: Store, ref: str, uri: str, *, name: str | None = None)
 
     Local files are copied into the store's `attachments/` folder so the
     content survives the original moving and so export can bundle it.
+    ``copy=False`` records the reference without gathering the file — the
+    caller asserts the file may stay on its own machine.
     """
     item = find(store, ref)
     clean = str(uri or "").strip()
     if not clean:
         raise GtdError("need a file path or URL to attach")
-    stored, label = _store_attachment(store, item["id"], clean, name)
+    stored, label = _store_attachment(store, item["id"], clean, name, copy=copy)
     held = store.query(
         "SELECT * FROM attachments WHERE item_id = ? ORDER BY created_at, rowid",
         (item["id"],))
